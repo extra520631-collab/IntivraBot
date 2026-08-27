@@ -62,6 +62,20 @@ def _emotion_get():
     return _emotion_sess, _emotion_io
 
 
+def warmup() -> bool:
+    """Build all three ONNX sessions at boot — same reasoning as voice.warmup(),
+    though the cost here is seconds rather than minutes."""
+    if not models_available():
+        return False
+    try:
+        _detector_get()
+        _recognizer_get()
+        _emotion_get()
+        return True
+    except Exception:
+        return False
+
+
 def decode_image(data: str | bytes) -> np.ndarray | None:
     """Decode a base64 string (optionally a data: URL) or raw bytes into a BGR image."""
     try:

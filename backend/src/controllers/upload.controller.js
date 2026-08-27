@@ -152,9 +152,24 @@ export const uploadVoice = asyncHandler(async (req, res) => {
   if (!status?.voiceEnabled) {
     throw new AppError(503, 'Voice verification is unavailable right now — please try again later')
   }
+  // The speaker model loads in the background at boot. Analysing before it is
+  // ready takes minutes, so we'd abort at TIMEOUT_MS and blame the recording.
+  if (status.warm === false) {
+    throw new AppError(503, 'Voice verification is still starting up — please try again in a minute')
+  }
 
   const result = await aiService.voiceAnalyze(audio, sampleRate || 16000)
   if (!Array.isArray(result?.embedding) || result.embedding.length === 0) {
+    // The AI service swallows its own failures into { ok: false, error } and a
+    // dead service comes back as null — log both, otherwise every cause looks
+    // like "a noisy clip" to the candidate and there's nothing to debug from.
+    console.warn('voice enroll failed:', result ? result.error || 'no embedding' : 'ai-service unreachable')
+    if (!result) {
+      throw new AppError(503, 'Voice verification is unavailable right now — please try again later')
+    }
+    if (result.error === 'too_short') {
+      throw new AppError(422, 'That clip had too little speech — read the whole sentence out loud and try again')
+    }
     throw new AppError(422, 'Could not read your voice from that clip — record again in a quieter spot')
   }
   if (result.multiVoice) {

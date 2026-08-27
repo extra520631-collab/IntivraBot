@@ -10,6 +10,7 @@ import base64
 import numpy as np
 
 _encoder = None  # lazy VoiceEncoder singleton
+_warm = False    # True once the cold-start cost below has been paid
 
 # Cosine thresholds for Resemblyzer d-vectors.
 _MATCH_THRESHOLD = 0.75  # >= => same speaker
@@ -35,6 +36,42 @@ def _encoder_get():
     return _encoder
 
 
+def is_warm() -> bool:
+    return _warm
+
+
+def warmup() -> bool:
+    """Pay the cold-start cost at boot instead of inside a candidate's request.
+
+    The first analyze() imports torch (~5s), scikit-learn (~3s), librosa and
+    webrtcvad, builds the encoder and JIT-warms the first inference — ~47s on a
+    dev laptop and well past three minutes on a small Railway container. The
+    backend gives up after 35s, so whoever recorded first got a 422 telling them
+    to find a quieter room. Called once from the app's lifespan on a background
+    thread, so the port still opens immediately for the health check.
+    """
+    global _warm
+    if _warm:
+        return True
+    if not voice_available():
+        return False
+    try:
+        # Imported here, not at module scope, so a machine without the voice
+        # stack still serves every other endpoint.
+        from resemblyzer import preprocess_wav  # noqa: F401 — pulls librosa + webrtcvad
+        from sklearn.cluster import KMeans  # noqa: F401 — the multi-voice path
+
+        # Real inference on noise: loading the weights alone leaves the first
+        # forward pass (and its allocations) unpaid.
+        rng = np.random.default_rng(0)
+        wav = (rng.standard_normal(16000 * 3) * 0.05).astype(np.float32)
+        _encoder_get().embed_utterance(wav, return_partials=True, rate=1.3)
+        _warm = True
+        return True
+    except Exception:
+        return False
+
+
 def _pcm16_to_float(audio_b64: str) -> np.ndarray:
     raw = base64.b64decode(audio_b64)
     return np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
@@ -45,6 +82,7 @@ def _cos(a, b) -> float:
 
 
 def analyze(audio_b64: str, sample_rate: int = 16000, reference=None) -> dict:
+    global _warm
     if not voice_available():
         return {"ok": False, "error": "voice_unavailable"}
     try:
@@ -61,6 +99,7 @@ def analyze(audio_b64: str, sample_rate: int = 16000, reference=None) -> dict:
         enc = _encoder_get()
         embed, partials, _ = enc.embed_utterance(wav, return_partials=True, rate=1.3)
         embed = embed / (np.linalg.norm(embed) + 1e-9)
+        _warm = True  # a request beat the warmup thread to it
 
         # Multi-voice: split the per-window partial embeddings into two clusters;
         # if the centroids are dissimilar and both clusters are populated, a

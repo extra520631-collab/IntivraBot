@@ -8,8 +8,10 @@ router = APIRouter()
 
 @router.get("/voice/status")
 def voice_status():
-    """Whether the voice-biometrics model (Resemblyzer) is importable."""
-    return {"voiceEnabled": voice.voice_available()}
+    """Whether the voice-biometrics model (Resemblyzer) is importable, and
+    whether it has finished loading — until it has, an analyze call can take
+    minutes and the caller is better off waiting than timing out."""
+    return {"voiceEnabled": voice.voice_available(), "warm": voice.is_warm()}
 
 
 @router.post("/voice/analyze")
