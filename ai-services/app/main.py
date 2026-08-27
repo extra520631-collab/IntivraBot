@@ -1,14 +1,23 @@
-import logging
-import threading
-import time
-from contextlib import asynccontextmanager
+import os
 
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
+# torch, scikit-learn and OpenBLAS size their thread pools from the *host's* CPU
+# count, which on a shared container is dozens of threads fighting over a
+# fraction of a core. Must be set before numpy/torch are imported, so it stays at
+# the very top of the module. Overridable per-environment.
+for _var in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS"):
+    os.environ.setdefault(_var, "2")
 
-from app.config import settings
-from app.core import face as face_core, voice as voice_core
-from app.routers import resume, interview, face, voice
+import logging  # noqa: E402 — must follow the thread caps above
+import threading  # noqa: E402
+import time  # noqa: E402
+from contextlib import asynccontextmanager  # noqa: E402
+
+from fastapi import FastAPI  # noqa: E402
+from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
+
+from app.config import settings  # noqa: E402
+from app.core import face as face_core, voice as voice_core  # noqa: E402
+from app.routers import resume, interview, face, voice  # noqa: E402
 
 # uvicorn only attaches handlers to its own loggers, and Railway shows nothing
 # else — so warmup timings have to go out under uvicorn's to be visible there.

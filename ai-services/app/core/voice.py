@@ -40,34 +40,43 @@ def is_warm() -> bool:
     return _warm
 
 
+def _synthetic_clip(seconds: float = 8.0) -> str:
+    """A voiced-sounding tone stack: harmonics over a wandering F0, syllable-rate
+    amplitude modulation and a little noise. Needs to read as speech to webrtcvad,
+    or preprocess_wav trims it to nothing and warmup never reaches the encoder.
+    """
+    t = np.arange(int(16000 * seconds), dtype=np.float32) / 16000
+    f0 = 120 + 25 * np.sin(2 * np.pi * 0.7 * t)
+    sig = np.zeros_like(t)
+    for h in range(1, 13):
+        sig += np.sin(2 * np.pi * f0 * h * t) / h
+    sig = sig * (0.5 + 0.5 * np.sin(2 * np.pi * 3.1 * t))
+    sig += 0.05 * np.random.default_rng(0).standard_normal(t.size)
+    pcm = (np.clip(sig * 0.3, -1, 1) * 32767).astype(np.int16)
+    return base64.b64encode(pcm.tobytes()).decode()
+
+
 def warmup() -> bool:
     """Pay the cold-start cost at boot instead of inside a candidate's request.
 
     The first analyze() imports torch (~5s), scikit-learn (~3s), librosa and
-    webrtcvad, builds the encoder and JIT-warms the first inference — ~47s on a
-    dev laptop and well past three minutes on a small Railway container. The
-    backend gives up after 35s, so whoever recorded first got a 422 telling them
-    to find a quieter room. Called once from the app's lifespan on a background
-    thread, so the port still opens immediately for the health check.
+    webrtcvad, builds the encoder, JIT-warms the first inference and runs the
+    first KMeans fit — ~47s on a dev laptop, 4+ minutes on a small Railway
+    container. The backend gives up after 35s, so whoever recorded first got a
+    422 telling them to find a quieter room. Called once from the app's lifespan
+    on a background thread, so the port still opens for the health check.
+
+    It runs the real analyze() rather than warming stages by hand: importing
+    preprocess_wav and KMeans without calling them left their first-call costs
+    unpaid, which still cost a live request 200s on Railway. The clip is 8s so
+    it yields the >=4 partials that take analyze() through the KMeans branch.
     """
-    global _warm
     if _warm:
         return True
     if not voice_available():
         return False
     try:
-        # Imported here, not at module scope, so a machine without the voice
-        # stack still serves every other endpoint.
-        from resemblyzer import preprocess_wav  # noqa: F401 — pulls librosa + webrtcvad
-        from sklearn.cluster import KMeans  # noqa: F401 — the multi-voice path
-
-        # Real inference on noise: loading the weights alone leaves the first
-        # forward pass (and its allocations) unpaid.
-        rng = np.random.default_rng(0)
-        wav = (rng.standard_normal(16000 * 3) * 0.05).astype(np.float32)
-        _encoder_get().embed_utterance(wav, return_partials=True, rate=1.3)
-        _warm = True
-        return True
+        return bool(analyze(_synthetic_clip(), 16000).get("ok"))
     except Exception:
         return False
 
@@ -99,7 +108,6 @@ def analyze(audio_b64: str, sample_rate: int = 16000, reference=None) -> dict:
         enc = _encoder_get()
         embed, partials, _ = enc.embed_utterance(wav, return_partials=True, rate=1.3)
         embed = embed / (np.linalg.norm(embed) + 1e-9)
-        _warm = True  # a request beat the warmup thread to it
 
         # Multi-voice: split the per-window partial embeddings into two clusters;
         # if the centroids are dissimilar and both clusters are populated, a
@@ -131,6 +139,9 @@ def analyze(audio_b64: str, sample_rate: int = 16000, reference=None) -> dict:
                 "cosine": round(cos, 4),
                 "matched": bool(cos >= _MATCH_THRESHOLD),
             }
+        # Only now is every first-call cost on this path actually paid, so this
+        # is the one place "warm" can be claimed honestly.
+        _warm = True
         return result
     except Exception as e:  # never crash the interview over a bad clip
         return {"ok": False, "error": str(e)[:150]}
