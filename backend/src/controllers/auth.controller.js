@@ -100,7 +100,7 @@ export const me = asyncHandler(async (req, res) => {
 
 // PATCH /api/auth/me  (protected) — update editable account fields
 export const updateMe = asyncHandler(async (req, res) => {
-  const { name, email, company, profile, hiring, settings } = req.body
+  const { name, email, company, profile, hiring, settings, onboardingComplete } = req.body
 
   const user = await User.findById(req.user._id)
   if (!user) throw new AppError(404, 'User not found')
@@ -150,6 +150,12 @@ export const updateMe = asyncHandler(async (req, res) => {
     for (const key of ['language', 'emailNotifications', 'pushNotifications', 'faceVoiceConsent']) {
       if (settings[key] !== undefined) user.settings[key] = settings[key]
     }
+  }
+
+  // Stamped on the wizard's final step. Kept idempotent so re-running the
+  // wizard later doesn't rewrite when they first completed it.
+  if (onboardingComplete && !user.onboardingCompletedAt) {
+    user.onboardingCompletedAt = new Date()
   }
 
   await user.save()

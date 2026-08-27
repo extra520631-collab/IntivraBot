@@ -377,7 +377,8 @@ export default function CandidateOnboarding() {
         settings: { language },
       }
     }
-    return { settings: { faceVoiceConsent: consent } }
+    // Last step — the flag that lets RequireAuth stop funnelling them here.
+    return { settings: { faceVoiceConsent: consent }, onboardingComplete: true }
   }
 
   const validate = (index) => {

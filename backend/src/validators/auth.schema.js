@@ -80,6 +80,9 @@ export const updateMeSchema = z.object({
       faceVoiceConsent: z.boolean().optional(),
     })
     .optional(),
+  // Sent by the last step of the signup wizard. Only `true` is accepted — the
+  // timestamp itself is the server's to set, and completion can't be undone.
+  onboardingComplete: z.literal(true).optional(),
 })
 
 export const changePasswordSchema = z.object({

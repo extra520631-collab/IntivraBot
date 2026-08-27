@@ -119,7 +119,7 @@ export default function App() {
       <Route path="/blog" element={<Blog />} />
 
       {/* Candidate — full-screen (no dashboard chrome) */}
-      <Route path="/candidate/onboarding" element={<RequireAuth role="candidate"><CandidateOnboarding /></RequireAuth>} />
+      <Route path="/candidate/onboarding" element={<RequireAuth role="candidate" onboarding><CandidateOnboarding /></RequireAuth>} />
       <Route path="/candidate/interview" element={<RequireAuth role="candidate"><Interview /></RequireAuth>} />
 
       {/* Candidate — dashboard */}
@@ -134,7 +134,7 @@ export default function App() {
       <Route path="/candidate/settings" element={<CandidateShell><Settings /></CandidateShell>} />
 
       {/* HR — full-screen */}
-      <Route path="/hr/onboarding" element={<RequireAuth role="hr"><HrOnboarding /></RequireAuth>} />
+      <Route path="/hr/onboarding" element={<RequireAuth role="hr" onboarding><HrOnboarding /></RequireAuth>} />
 
       {/* HR — dashboard */}
       <Route path="/hr" element={<HrShell><HrDashboard /></HrShell>} />

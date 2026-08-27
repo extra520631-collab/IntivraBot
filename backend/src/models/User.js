@@ -109,6 +109,11 @@ const userSchema = new Schema(
     hiring: { type: hiringSchema, default: () => ({}) },
     settings: { type: settingsSchema, default: () => ({}) },
 
+    // Set once, when the signup wizard's last step is submitted. Unset means
+    // the wizard was never finished — every protected route sends them back to
+    // it, so abandoning the wizard and signing in again can't skip it.
+    onboardingCompletedAt: { type: Date },
+
     // Password reset
     resetTokenHash: { type: String, select: false },
     resetTokenExpires: { type: Date, select: false },

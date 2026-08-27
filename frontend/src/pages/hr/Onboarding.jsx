@@ -73,6 +73,8 @@ export default function HrOnboarding() {
           language,
           questionsPerInterview: Number(questionsPerInterview),
         },
+        // Last step — the flag that lets RequireAuth stop funnelling them here.
+        onboardingComplete: true,
       })
       setUser(res.user)
       toast.success('Company profile saved.')
