@@ -1,0 +1,15 @@
+# Root-level gitignore
+node_modules/
+.env
+.env.local
+*.log
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Claude/AI tool metadata
+.claude/
+
+# Test data
+.testdata/
