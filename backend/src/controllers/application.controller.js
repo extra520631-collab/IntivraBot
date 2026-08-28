@@ -1,6 +1,6 @@
 import mongoose from 'mongoose'
 import Application from '../models/Application.js'
-import Job from '../models/Job.js'
+import Job, { isExpired } from '../models/Job.js'
 import Interview from '../models/Interview.js'
 import AppError from '../utils/AppError.js'
 import { asyncHandler } from '../utils/asyncHandler.js'
@@ -17,6 +17,7 @@ export const apply = asyncHandler(async (req, res) => {
   const job = await Job.findById(jobId)
   if (!job) throw new AppError(404, 'Job not found')
   if (job.status !== 'open') throw new AppError(400, 'This job is no longer accepting applications')
+  if (isExpired(job)) throw new AppError(400, 'The application deadline for this job has passed')
 
   const already = await Application.exists({ job: jobId, candidate: req.user._id })
   if (already) throw new AppError(409, 'You have already applied to this job')

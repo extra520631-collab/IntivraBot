@@ -1,5 +1,5 @@
 import mongoose from 'mongoose'
-import Job from '../models/Job.js'
+import Job, { isExpired } from '../models/Job.js'
 import Application from '../models/Application.js'
 import AppError from '../utils/AppError.js'
 import { asyncHandler } from '../utils/asyncHandler.js'
@@ -89,7 +89,8 @@ export const listJobs = asyncHandler(async (req, res) => {
 // GET /api/jobs/mine  — postings owned by the HR's whole team (same company)
 export const myJobs = asyncHandler(async (req, res) => {
   const ids = await teamMemberIds(req.user)
-  const docs = await Job.find({ hr: { $in: ids } }).sort({ createdAt: -1 }).lean()
+  const docs = (await Job.find({ hr: { $in: ids } }).sort({ createdAt: -1 }).lean())
+    .map((j) => ({ ...j, isExpired: isExpired(j) }))
   const jobs = await withApplicantCounts(docs)
   res.json({ success: true, jobs })
 })
@@ -113,7 +114,7 @@ export const getJob = asyncHandler(async (req, res) => {
     matched.hasResume = profile.hasResume
   }
 
-  res.json({ success: true, job: { ...matched, applicantsCount, hasApplied } })
+  res.json({ success: true, job: { ...matched, isExpired: isExpired(job), applicantsCount, hasApplied } })
 })
 
 // POST /api/jobs  — HR only

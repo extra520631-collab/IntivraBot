@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
-import { MapPin, Briefcase, Search, SlidersHorizontal, X, SearchX, Users } from 'lucide-react'
+import { MapPin, Briefcase, Search, SlidersHorizontal, X, SearchX, Users, Wallet, Laptop, CalendarDays } from 'lucide-react'
 import Button from '../../components/ui/Button'
 import { Select } from '../../components/ui/Input'
 import EmptyState from '../../components/ui/EmptyState'
@@ -9,6 +9,7 @@ import { api } from '../../lib/api'
 import { useFetch } from '../../lib/useFetch'
 import { timeAgo } from '../../lib/format'
 import { cn } from '../../lib/cn'
+import { formatSalary, formatDeadline, isDeadlineSoon } from '../../lib/job'
 
 const PAGE_SIZE = 5
 const jobTypes = ['All types', 'Full-time', 'Part-time', 'Contract', 'Internship']
@@ -174,8 +175,28 @@ export default function CandidateJobs() {
                     <span>{j.company || '—'}</span>
                     <span className="flex items-center gap-1"><MapPin className="h-3.5 w-3.5" />{j.location}</span>
                     <span className="flex items-center gap-1"><Briefcase className="h-3.5 w-3.5" />{j.type}</span>
+                    {j.workMode && <span className="flex items-center gap-1"><Laptop className="h-3.5 w-3.5" />{j.workMode}</span>}
                     <span className="flex items-center gap-1"><Users className="h-3.5 w-3.5" />{j.applicantsCount} applied</span>
                   </div>
+
+                  {/* Pay and a closing date are the two things that decide
+                      whether a candidate opens the job at all. */}
+                  <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                    {formatSalary(j) && (
+                      <span className="inline-flex items-center gap-1 rounded-md bg-emerald-50 px-2 py-0.5 text-xs font-semibold text-emerald-700">
+                        <Wallet className="h-3.5 w-3.5" />{formatSalary(j)}
+                      </span>
+                    )}
+                    {formatDeadline(j.deadline) && (
+                      <span className={cn(
+                        'inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-xs font-medium',
+                        isDeadlineSoon(j.deadline) ? 'bg-amber-50 text-amber-800' : 'bg-ink-100 text-ink-600'
+                      )}>
+                        <CalendarDays className="h-3.5 w-3.5" />{formatDeadline(j.deadline)}
+                      </span>
+                    )}
+                  </div>
+
                   <p className="mt-2 line-clamp-2 text-sm text-ink-600">{j.description}</p>
                   <div className="mt-3 flex flex-wrap gap-1.5">
                     {(j.skills || []).slice(0, 5).map((s) => (

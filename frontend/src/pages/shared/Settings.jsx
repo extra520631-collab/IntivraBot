@@ -53,6 +53,21 @@ export default function Settings() {
 
   const [savingPref, setSavingPref] = useState(false)
 
+  // HR hiring defaults. Collected once in onboarding; this is the only place
+  // they can be changed afterwards.
+  const h = user?.hiring || {}
+  const [hiring, setHiring] = useState({
+    industry: h.industry || 'IT / Software',
+    size: h.size || '11-50',
+    designation: h.designation || 'HR Manager',
+    departments: h.departments || '',
+    applyThreshold: h.applyThreshold ?? 70,
+    passThreshold: h.passThreshold ?? 80,
+    language: h.language || 'English',
+    questionsPerInterview: h.questionsPerInterview ?? 5,
+  })
+  const [savingHiring, setSavingHiring] = useState(false)
+
   const [currentPassword, setCurrentPassword] = useState('')
   const [newPassword, setNewPassword] = useState('')
   const [savingPassword, setSavingPassword] = useState(false)
@@ -101,6 +116,30 @@ export default function Settings() {
       toast.error(err.message || 'Could not save your preference')
     } finally {
       setSavingPref(false)
+    }
+  }
+
+  const saveHiring = async () => {
+    if (Number(hiring.passThreshold) < Number(hiring.applyThreshold)) {
+      return toast.error('Pass threshold must be greater than or equal to the apply threshold.')
+    }
+    setSavingHiring(true)
+    try {
+      const res = await api.patch('/auth/me', {
+        hiring: {
+          ...hiring,
+          departments: hiring.departments.trim(),
+          applyThreshold: Number(hiring.applyThreshold),
+          passThreshold: Number(hiring.passThreshold),
+          questionsPerInterview: Number(hiring.questionsPerInterview),
+        },
+      })
+      setUser(res.user)
+      toast.success('Hiring defaults saved.')
+    } catch (err) {
+      toast.error(err.message || 'Could not save your hiring defaults')
+    } finally {
+      setSavingHiring(false)
     }
   }
 
@@ -155,9 +194,13 @@ export default function Settings() {
   }
 
   return (
-    <div className="mx-auto max-w-3xl space-y-6">
+    <div className="mx-auto max-w-6xl space-y-6">
       <h2 className="text-xl font-bold text-ink-900">Settings</h2>
 
+      {/* Two columns on desktop so the page fills the width like every other
+          dashboard screen; a single stack below lg. */}
+      <div className="grid items-start gap-6 lg:grid-cols-2">
+        <div className="space-y-6">
       {/* Account */}
       <Card>
         <CardHeader title="Account" subtitle="Your sign-in details" />
@@ -180,6 +223,123 @@ export default function Settings() {
         </CardBody>
       </Card>
 
+      {/* HR hiring defaults — the only place these can be changed after the
+          onboarding wizard has been completed. */}
+      {isHr && (
+        <Card>
+          <CardHeader
+            title="Hiring defaults"
+            subtitle="Pre-filled on every new job you post — each job can still override them"
+          />
+          <CardBody className="space-y-4">
+            <div className="grid gap-4 sm:grid-cols-2">
+              <Select
+                label="Industry"
+                value={hiring.industry}
+                onChange={(e) => setHiring((s) => ({ ...s, industry: e.target.value }))}
+              >
+                <option>IT / Software</option>
+                <option>Marketing</option>
+                <option>Finance</option>
+                <option>Education</option>
+                <option>Healthcare</option>
+                <option>Manufacturing</option>
+                <option>Retail / E-commerce</option>
+                <option>Other</option>
+              </Select>
+              <Select
+                label="Company size"
+                value={hiring.size}
+                onChange={(e) => setHiring((s) => ({ ...s, size: e.target.value }))}
+              >
+                <option>1-10</option>
+                <option>11-50</option>
+                <option>51-200</option>
+                <option>200+</option>
+              </Select>
+            </div>
+
+            <div className="grid gap-4 sm:grid-cols-2">
+              <Select
+                label="Your designation"
+                value={hiring.designation}
+                onChange={(e) => setHiring((s) => ({ ...s, designation: e.target.value }))}
+              >
+                <option>Recruiter</option>
+                <option>HR Manager</option>
+                <option>Team Lead</option>
+                <option>Founder</option>
+              </Select>
+              <Input
+                label="Departments you hire for"
+                placeholder="e.g. Engineering, Design"
+                value={hiring.departments}
+                maxLength={200}
+                hint="Comma separated."
+                onChange={(e) => setHiring((s) => ({ ...s, departments: e.target.value }))}
+              />
+            </div>
+
+            <div className="grid gap-4 sm:grid-cols-2">
+              <div>
+                <div className="mb-2 flex items-center justify-between">
+                  <label className="label-base mb-0">Apply threshold</label>
+                  <span className="text-sm font-bold text-brand-600">{hiring.applyThreshold}%</span>
+                </div>
+                <input
+                  type="range" min="0" max="100" step="5"
+                  value={hiring.applyThreshold}
+                  onChange={(e) => setHiring((s) => ({ ...s, applyThreshold: +e.target.value }))}
+                  className="w-full accent-brand-600"
+                />
+                <p className="mt-1 text-xs text-ink-400">Below this CV match, candidates can&apos;t apply.</p>
+              </div>
+              <div>
+                <div className="mb-2 flex items-center justify-between">
+                  <label className="label-base mb-0">Pass threshold</label>
+                  <span className="text-sm font-bold text-brand-600">{hiring.passThreshold}%</span>
+                </div>
+                <input
+                  type="range" min="0" max="100" step="5"
+                  value={hiring.passThreshold}
+                  onChange={(e) => setHiring((s) => ({ ...s, passThreshold: +e.target.value }))}
+                  className="w-full accent-brand-600"
+                />
+                <p className="mt-1 text-xs text-ink-400">At or above this, a candidate is marked passed.</p>
+              </div>
+            </div>
+
+            <div className="grid gap-4 sm:grid-cols-2">
+              <Select
+                label="Default interview language"
+                value={hiring.language}
+                onChange={(e) => setHiring((s) => ({ ...s, language: e.target.value }))}
+              >
+                <option>English</option>
+                <option>Urdu</option>
+                <option>Both</option>
+              </Select>
+              <Select
+                label="Questions per interview"
+                value={hiring.questionsPerInterview}
+                onChange={(e) => setHiring((s) => ({ ...s, questionsPerInterview: +e.target.value }))}
+              >
+                <option>5</option>
+                <option>8</option>
+                <option>10</option>
+              </Select>
+            </div>
+
+            <Button size="sm" onClick={saveHiring} disabled={savingHiring}>
+              {savingHiring ? <><Spinner size={16} /> Saving…</> : 'Save hiring defaults'}
+            </Button>
+          </CardBody>
+        </Card>
+      )}
+        </div>
+
+        {/* Right column */}
+        <div className="space-y-6">
       {/* Preferences */}
       <Card>
         <CardHeader title="Preferences" subtitle="Saved automatically" />
@@ -313,6 +473,8 @@ export default function Settings() {
           Set your company above — team members and invites are grouped by company.
         </div>
       )}
+        </div>
+      </div>
     </div>
   )
 }

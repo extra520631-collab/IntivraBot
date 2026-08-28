@@ -17,6 +17,37 @@ const jobSchema = new Schema(
     },
     experience: { type: String, trim: true, default: '' },
 
+    // ── Compensation ──────────────────────────────────────────────────────
+    // Stored as a range in whole currency units. Either end may be left blank
+    // (an "up to X" or "from X" posting), and the whole block is optional —
+    // `salaryDisclosed` is what decides if candidates see anything at all.
+    salaryMin: { type: Number, min: 0, max: 100000000, default: null },
+    salaryMax: { type: Number, min: 0, max: 100000000, default: null },
+    salaryCurrency: { type: String, enum: ['PKR', 'USD', 'EUR', 'GBP', 'AED', 'SAR', 'INR'], default: 'PKR' },
+    salaryPeriod: { type: String, enum: ['month', 'year', 'hour'], default: 'month' },
+    // "Market competitive" postings still record a range internally for
+    // matching, but hide the numbers on the job board.
+    salaryDisclosed: { type: Boolean, default: true },
+    salaryNegotiable: { type: Boolean, default: false },
+    benefits: { type: [String], default: [] },
+
+    // ── Role logistics ────────────────────────────────────────────────────
+    workMode: { type: String, enum: ['Onsite', 'Hybrid', 'Remote'], default: 'Onsite' },
+    department: { type: String, trim: true, maxlength: 80, default: '' },
+    openings: { type: Number, min: 1, max: 999, default: 1 },
+    education: {
+      type: String,
+      enum: ['', 'Matric', 'Intermediate', 'Diploma', 'Bachelors', 'Masters', 'PhD'],
+      default: '',
+    },
+    // Applications close on their own once this passes — see `isExpired`.
+    deadline: { type: Date, default: null },
+
+    // ── Longer-form copy, all optional ────────────────────────────────────
+    responsibilities: { type: [String], default: [] },
+    requirements: { type: [String], default: [] },
+    niceToHaveSkills: { type: [String], default: [] },
+
     // ATS gate (Phase 3): a candidate must match >= applyThreshold to apply;
     // >= passThreshold marks a strong candidate.
     applyThreshold: { type: Number, min: 0, max: 100, default: 60 },
@@ -36,7 +67,7 @@ const jobSchema = new Schema(
 )
 
 // Text index powers keyword search across title, skills and company.
-jobSchema.index({ title: 'text', skills: 'text', company: 'text' })
+jobSchema.index({ title: 'text', skills: 'text', company: 'text', department: 'text' })
 
 jobSchema.set('toJSON', {
   transform(_doc, ret) {
@@ -44,5 +75,18 @@ jobSchema.set('toJSON', {
     return ret
   },
 })
+
+// A passed deadline closes applications without anyone editing the job.
+// Plain functions rather than schema virtuals because every read path here
+// uses .lean(), which does not carry virtuals.
+export function isExpired(job) {
+  return Boolean(job?.deadline && new Date(job.deadline).getTime() < Date.now())
+}
+
+// The single flag the apply gate and the UI both read, so an expired job and
+// a closed one behave identically everywhere.
+export function isAccepting(job) {
+  return job?.status === 'open' && !isExpired(job)
+}
 
 export default model('Job', jobSchema)

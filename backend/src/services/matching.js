@@ -1,4 +1,5 @@
 import User from '../models/User.js'
+import { isAccepting, isExpired } from '../models/Job.js'
 import { aiService } from './aiService.js'
 
 // Candidate-side ATS matching, shared by the job board, the job detail page and
@@ -42,17 +43,21 @@ export async function scoreJobsForCandidate(matchProfile, jobs) {
 
 // Decorate jobs with the candidate's match. `eligible` is what the apply gate
 // enforces; it stays true when we could not score, so an AI-service outage
-// never silently locks everyone out of applying.
+// never silently locks everyone out of applying. A closed or past-deadline job
+// is never eligible regardless of score — the server rejects those anyway, so
+// showing an enabled Apply button would only be a dead end.
 export function attachMatch(jobs, scores) {
   return jobs.map((job) => {
+    const open = isAccepting(job)
     const m = scores.get(String(job._id))
-    if (!m) return { ...job, matchScore: null, eligible: true }
+    if (!m) return { ...job, matchScore: null, eligible: open, isExpired: isExpired(job) }
     return {
       ...job,
       matchScore: m.score,
       matchedSkills: m.matchedSkills,
       missingSkills: m.missingSkills,
-      eligible: m.score >= (job.applyThreshold ?? 0),
+      eligible: open && m.score >= (job.applyThreshold ?? 0),
+      isExpired: isExpired(job),
     }
   })
 }

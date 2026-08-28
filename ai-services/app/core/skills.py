@@ -2,7 +2,58 @@
 
 Canonical name -> list of aliases (all matched case-insensitively, word-boundary).
 This is intentionally data-driven so it's easy to extend for any job domain.
+
+Aliases only need to list *distinct words*, not every way of spacing or
+punctuating them: `normalize_skill` below folds "React.js", "react js",
+"ReactJS" and "react-js" onto the same key, so one alias covers all of them.
 """
+
+import re
+
+# Umbrella terms a candidate or an employer writes as a single word, which
+# really stand for a set of concrete skills. Writing "MERN stack" on a CV means
+# the person has all four; requiring it on a job post means the job needs all
+# four. Expanded on both sides so either spelling matches the other.
+SKILL_BUNDLES: dict[str, list[str]] = {
+    "MERN Stack": ["MongoDB", "Express", "React", "Node.js"],
+    "MEAN Stack": ["MongoDB", "Express", "Angular", "Node.js"],
+    "MEVN Stack": ["MongoDB", "Express", "Vue", "Node.js"],
+    "LAMP Stack": ["Linux", "MySQL", "PHP"],
+    "Full Stack": ["REST APIs", "SQL", "Git"],
+    # The skill picker offers some labels that name two skills at once. Treated
+    # as bundles so ticking "PHP / Laravel" satisfies a job asking for either.
+    "HTML/CSS": ["HTML", "CSS"],
+    "PHP / Laravel": ["PHP", "Laravel"],
+    ".NET / C#": ["C#"],
+    "Agile / Scrum": ["Agile"],
+    "Bash / Shell Scripting": ["Bash"],
+    "DNS / DHCP": ["DNS"],
+    "ETL / Pipelines": ["ETL"],
+    "Helpdesk / Ticketing": ["Helpdesk"],
+    "Bookkeeping / Accounting": ["Accounting"],
+    "ISO 27001 / Compliance": ["Compliance"],
+    "LLMs / Prompt Engineering": ["LLMs"],
+}
+
+# Aliases for the bundle names themselves.
+BUNDLE_ALIASES: dict[str, list[str]] = {
+    "MERN Stack": ["mern", "mern stack", "mern-stack", "mern developer"],
+    "MEAN Stack": ["mean stack", "mean-stack"],
+    "MEVN Stack": ["mevn", "mevn stack", "mevn-stack"],
+    "LAMP Stack": ["lamp stack", "lamp-stack"],
+    "Full Stack": ["full stack", "fullstack", "full-stack", "full stack developer"],
+    "HTML/CSS": ["html/css", "html css", "html and css"],
+    "PHP / Laravel": ["php/laravel", "php laravel"],
+    ".NET / C#": [".net/c#", ".net", "dotnet", "asp.net", "net core"],
+    "Agile / Scrum": ["agile/scrum", "agile scrum", "agile / scrum testing"],
+    "Bash / Shell Scripting": ["bash/shell scripting", "bash shell scripting"],
+    "DNS / DHCP": ["dns/dhcp", "dns dhcp"],
+    "ETL / Pipelines": ["etl/pipelines", "etl pipelines"],
+    "Helpdesk / Ticketing": ["helpdesk/ticketing", "helpdesk ticketing"],
+    "Bookkeeping / Accounting": ["bookkeeping/accounting", "bookkeeping accounting"],
+    "ISO 27001 / Compliance": ["iso 27001/compliance", "iso 27001 compliance"],
+    "LLMs / Prompt Engineering": ["llms/prompt engineering", "llms prompt engineering"],
+}
 
 SKILL_ALIASES: dict[str, list[str]] = {
     # ── Languages ──
@@ -73,7 +124,7 @@ SKILL_ALIASES: dict[str, list[str]] = {
     # ── Design ──
     "Figma": ["figma"],
     "Adobe XD": ["adobe xd", "xd"],
-    "Photoshop": ["photoshop"],
+    "Photoshop": ["photoshop", "adobe photoshop"],
     "Prototyping": ["prototyping", "prototype"],
     "Wireframing": ["wireframing", "wireframe"],
     "Design Systems": ["design system", "design systems"],
@@ -179,4 +230,71 @@ SKILL_ALIASES: dict[str, list[str]] = {
     "Critical Thinking": ["critical thinking", "analytical thinking", "analytical skills"],
     "Attention to Detail": ["attention to detail", "detail oriented", "detail-oriented"],
     "Training & Development": ["training", "mentoring", "coaching"],
+    # ── Offered by the skill picker but previously absent from the taxonomy,
+    #    so ticking them scored nothing against a job that asked for them. ──
+    "JWT": ["jwt", "json web token", "json web tokens"],
+    "Database Design": ["database design", "schema design", "er diagram", "data modeling", "data modelling"],
+    "Linux Administration": ["linux administration", "linux admin", "system administration", "sysadmin"],
+    "Office 365 Administration": ["office 365 administration", "o365 administration", "m365 administration"],
+    "Remote Desktop Support": ["remote desktop support", "remote troubleshooting"],
+    "Printer & Peripherals": ["printer", "printers", "peripherals", "scanner support"],
+    "Asset Management": ["asset management", "inventory management", "it asset"],
+    "Endpoint Security": ["endpoint security", "endpoint protection", "antivirus", "edr"],
+    "Monitoring & Logging": ["monitoring & logging", "monitoring and logging", "log analysis"],
+    "Site Reliability": ["site reliability", "sre", "reliability engineering"],
+    "Mobile App Testing": ["mobile app testing", "mobile testing", "appium"],
+    "Test Documentation": ["test documentation", "test report", "test summary"],
+    "Sprint Planning": ["sprint planning", "sprint", "backlog grooming", "story points"],
+    "Product Roadmapping": ["product roadmap", "product roadmapping", "roadmapping"],
+    "Process Improvement": ["process improvement", "continuous improvement", "six sigma", "lean"],
+    "Team Leadership": ["team leadership", "people management", "line management"],
+    "Reporting": ["reporting", "mis reporting", "management reporting"],
+    "UI Design": ["ui design", "user interface design", "visual design"],
+    "UX Writing": ["ux writing", "microcopy", "content design"],
+    "Motion Graphics": ["motion graphics", "motion design", "animation"],
 }
+
+# Suffixes people bolt onto a technology's name without changing its meaning.
+# "React js", "React.JS" and "React" are one skill; "MongoDB" and "Mongo DB"
+# likewise. Stripped only when something remains, so "JS" alone survives.
+_NOISE_SUFFIXES = ("js", "db", "lang", "framework", "library")
+
+# Non-alphanumerics that only ever separate words inside a skill name. "C++"
+# and "C#" keep their trailing symbols because those *are* the name — hence
+# the alnum-only squeeze rather than a blanket strip.
+_SEPARATORS = re.compile(r"[\s._/\\-]+")
+
+
+def normalize_skill(skill: str) -> str:
+    """Fold a written skill onto a comparable key.
+
+    "React.js", "react js", "ReactJS", "React-JS" and "react" all become
+    "react", so an employer's spelling never has to match the candidate's
+    character for character. Returns "" for input with nothing comparable in it.
+    """
+    s = (skill or "").strip().lower()
+    if not s:
+        return ""
+
+    # "c++" / "c#" are meaningful as written — never squeezed or de-suffixed.
+    if s in ("c++", "cpp", "c#", "c sharp", "csharp"):
+        return s
+
+    # The picker labels a skill with an example in brackets — "Bug Tracking
+    # (Jira)", "Excel (Advanced)". The bracket is a hint for the human, not
+    # part of the skill, so a job asking for plain "Bug Tracking" still matches.
+    s = re.sub(r"\([^)]*\)", " ", s).strip()
+    if not s:
+        return ""
+
+    # Collapse every separator so spacing and punctuation stop mattering.
+    s = _SEPARATORS.sub("", s)
+
+    # Drop a trailing noise word ("reactjs" -> "react", "mongodb" -> "mongo"),
+    # but only when a real name is left behind.
+    for suffix in _NOISE_SUFFIXES:
+        if s.endswith(suffix) and len(s) > len(suffix) + 1:
+            s = s[: -len(suffix)]
+            break
+
+    return s

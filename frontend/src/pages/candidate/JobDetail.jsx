@@ -1,6 +1,9 @@
 import { useRef, useState } from 'react'
 import { useParams, Link, useNavigate } from 'react-router-dom'
-import { MapPin, Briefcase, CheckCircle2, XCircle, ArrowLeft, FileText, Upload, Loader2 } from 'lucide-react'
+import {
+  MapPin, Briefcase, CheckCircle2, XCircle, ArrowLeft, FileText, Upload, Loader2,
+  Wallet, CalendarDays, Users, GraduationCap, Laptop, Gift, ListChecks, Clock,
+} from 'lucide-react'
 import Badge from '../../components/ui/Badge'
 import Button from '../../components/ui/Button'
 import Spinner from '../../components/ui/Spinner'
@@ -8,9 +11,11 @@ import { Card, CardBody } from '../../components/ui/Card'
 import { Ring } from '../../components/ui/Progress'
 import { Textarea } from '../../components/ui/Input'
 import EmptyState from '../../components/ui/EmptyState'
+import { cn } from '../../lib/cn'
 import { api } from '../../lib/api'
 import { useFetch } from '../../lib/useFetch'
 import { useToast } from '../../context/ToastContext'
+import { formatSalary, formatDeadline, isDeadlineSoon } from '../../lib/job'
 
 export default function JobDetail() {
   const { id } = useParams()
@@ -95,6 +100,10 @@ export default function JobDetail() {
   }
 
   const alreadyApplied = job.hasApplied && !result
+  const salary = formatSalary(job)
+  const deadlineNote = formatDeadline(job.deadline)
+  // The server rejects both cases, so the button should never invite the click.
+  const closed = Boolean(job.isExpired) || job.status !== 'open'
 
   return (
     <div className="mx-auto max-w-5xl space-y-5">
@@ -113,15 +122,93 @@ export default function JobDetail() {
                   <span>{job.company || '—'}</span>
                   <span className="flex items-center gap-1"><MapPin className="h-3.5 w-3.5" />{job.location}</span>
                   <span className="flex items-center gap-1"><Briefcase className="h-3.5 w-3.5" />{job.type}</span>
+                  {job.workMode && <span className="flex items-center gap-1"><Laptop className="h-3.5 w-3.5" />{job.workMode}</span>}
+                  {job.department && <span>{job.department}</span>}
                 </div>
               </div>
-              {job.experience && <Badge tone="brand">{job.experience}</Badge>}
+              <div className="flex shrink-0 flex-col items-end gap-1.5">
+                {job.experience && <Badge tone="brand">{job.experience}</Badge>}
+                {job.isExpired && <Badge tone="red">Closed</Badge>}
+              </div>
             </div>
+
+            {/* Pay is the first thing most candidates look for. */}
+            <div className="mt-4 flex flex-wrap items-center gap-2">
+              <span className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-50 px-3 py-1.5 text-sm font-semibold text-emerald-700">
+                <Wallet className="h-4 w-4" />
+                {salary || (job.salaryDisclosed === false ? 'Market competitive' : 'Salary not disclosed')}
+              </span>
+              {job.salaryNegotiable && (
+                <span className="rounded-lg bg-ink-100 px-2.5 py-1.5 text-xs font-medium text-ink-600">Negotiable</span>
+              )}
+              {deadlineNote && (
+                <span
+                  className={cn(
+                    'inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-medium',
+                    job.isExpired
+                      ? 'bg-red-50 text-red-700'
+                      : isDeadlineSoon(job.deadline)
+                        ? 'bg-amber-50 text-amber-800'
+                        : 'bg-ink-100 text-ink-600'
+                  )}
+                >
+                  <CalendarDays className="h-4 w-4" />
+                  {deadlineNote}
+                </span>
+              )}
+            </div>
+
+            {/* At-a-glance facts */}
+            <dl className="mt-5 grid gap-x-6 gap-y-2.5 border-y border-ink-100 py-4 sm:grid-cols-2">
+              {[
+                ['Openings', job.openings > 1 ? `${job.openings} positions` : '1 position', Users],
+                ['Work mode', job.workMode || '—', Laptop],
+                ['Experience', job.experience || 'Any', Clock],
+                ['Education', job.education || 'No specific requirement', GraduationCap],
+              ].map(([label, value, Icon]) => (
+                <div key={label} className="flex items-center justify-between gap-3">
+                  <dt className="flex items-center gap-1.5 text-xs text-ink-500">
+                    <Icon className="h-3.5 w-3.5 text-ink-400" />{label}
+                  </dt>
+                  <dd className="text-xs font-medium text-ink-900">{value}</dd>
+                </div>
+              ))}
+            </dl>
 
             <div className="mt-5">
               <h3 className="text-sm font-semibold text-ink-900">About the role</h3>
               <p className="mt-1.5 whitespace-pre-line text-sm text-ink-600">{job.description}</p>
             </div>
+
+            {job.responsibilities?.length > 0 && (
+              <div className="mt-5">
+                <h3 className="flex items-center gap-1.5 text-sm font-semibold text-ink-900">
+                  <ListChecks className="h-4 w-4 text-brand-600" /> What you&apos;ll do
+                </h3>
+                <ul className="mt-2 space-y-1.5">
+                  {job.responsibilities.map((r) => (
+                    <li key={r} className="flex gap-2 text-sm text-ink-600">
+                      <span className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-brand-400" />
+                      {r}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+
+            {job.requirements?.length > 0 && (
+              <div className="mt-5">
+                <h3 className="text-sm font-semibold text-ink-900">What they&apos;re looking for</h3>
+                <ul className="mt-2 space-y-1.5">
+                  {job.requirements.map((r) => (
+                    <li key={r} className="flex gap-2 text-sm text-ink-600">
+                      <span className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-ink-300" />
+                      {r}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
 
             <div className="mt-5">
               <h3 className="text-sm font-semibold text-ink-900">Required skills</h3>
@@ -131,6 +218,31 @@ export default function JobDetail() {
                 ))}
               </div>
             </div>
+
+            {job.niceToHaveSkills?.length > 0 && (
+              <div className="mt-4">
+                <h3 className="text-sm font-semibold text-ink-900">Nice to have</h3>
+                <p className="mt-0.5 text-xs text-ink-400">Not counted against your match score.</p>
+                <div className="mt-2 flex flex-wrap gap-1.5">
+                  {job.niceToHaveSkills.map((s) => (
+                    <span key={s} className="rounded-md border border-dashed border-ink-300 px-2.5 py-1 text-xs font-medium text-ink-500">{s}</span>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {job.benefits?.length > 0 && (
+              <div className="mt-5">
+                <h3 className="flex items-center gap-1.5 text-sm font-semibold text-ink-900">
+                  <Gift className="h-4 w-4 text-brand-600" /> Benefits &amp; perks
+                </h3>
+                <div className="mt-2 flex flex-wrap gap-1.5">
+                  {job.benefits.map((b) => (
+                    <span key={b} className="rounded-md bg-emerald-50 px-2.5 py-1 text-xs font-medium text-emerald-700">{b}</span>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
         </div>
 
@@ -205,7 +317,11 @@ export default function JobDetail() {
                       <div className="mt-3 w-full rounded-lg bg-ink-50 p-3 text-xs text-ink-500">
                         This employer requires{' '}
                         <span className="font-semibold text-ink-900">{job.applyThreshold}%</span>
-                        {job.eligible ? ' — you clear it.' : ` — you're ${job.applyThreshold - job.matchScore}% short.`}
+                        {job.eligible
+                          ? ' — you clear it.'
+                          : job.matchScore >= job.applyThreshold
+                            ? ' — you clear it, but this job has closed.'
+                            : ` — you're ${job.applyThreshold - job.matchScore}% short.`}
                       </div>
 
                       {job.missingSkills?.length > 0 && (
@@ -227,11 +343,19 @@ export default function JobDetail() {
                         onClick={apply}
                         disabled={submitting || !job.eligible}
                       >
-                        {submitting ? (<><Spinner size={18} /> Applying…</>) : job.eligible ? 'Apply now' : 'Below the minimum'}
+                        {submitting
+                          ? (<><Spinner size={18} /> Applying…</>)
+                          : job.eligible
+                            ? 'Apply now'
+                            : closed
+                              ? 'Applications closed'
+                              : 'Below the minimum'}
                       </Button>
                       {!job.eligible && (
                         <p className="mt-2 text-center text-xs text-ink-400">
-                          Update your CV or profile skills, then reload this page.
+                          {closed
+                            ? 'This employer is no longer accepting applications.'
+                            : 'Update your CV or profile skills, then reload this page.'}
                         </p>
                       )}
                     </>
@@ -281,8 +405,12 @@ export default function JobDetail() {
                         onChange={(e) => setResume(e.target.value)}
                         placeholder="Paste your CV text here…"
                       />
-                      <Button size="lg" className="mt-3 w-full" onClick={apply} disabled={submitting}>
-                        {submitting ? (<><Spinner size={18} /> Scoring…</>) : 'Apply now'}
+                      <Button size="lg" className="mt-3 w-full" onClick={apply} disabled={submitting || closed}>
+                        {submitting
+                          ? (<><Spinner size={18} /> Scoring…</>)
+                          : closed
+                            ? 'Applications closed'
+                            : 'Apply now'}
                       </Button>
                     </>
                   )}

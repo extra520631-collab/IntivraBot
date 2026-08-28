@@ -21,7 +21,7 @@ export default function PostJob() {
   }
 
   return (
-    <div className="mx-auto max-w-3xl space-y-6">
+    <div className="mx-auto max-w-6xl space-y-6">
       <div>
         <h2 className="text-xl font-bold text-ink-900">Post a new job</h2>
         <p className="text-sm text-ink-500">Set the requirements and thresholds — AI handles the rest.</p>
@@ -32,6 +32,12 @@ export default function PostJob() {
         initial={{
           applyThreshold: user?.hiring?.applyThreshold ?? 70,
           passThreshold: user?.hiring?.passThreshold ?? 80,
+          questionCount: user?.hiring?.questionsPerInterview ?? 5,
+          // Onboarding collects a comma-separated list; a single department
+          // is a safe default, several means the HR has to pick per job.
+          department: (user?.hiring?.departments || '').split(',').length === 1
+            ? (user?.hiring?.departments || '').trim()
+            : '',
         }}
         onSubmit={publish}
         onCancel={() => navigate('/hr/jobs')}

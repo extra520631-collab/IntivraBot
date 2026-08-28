@@ -1,4 +1,15 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
-  <rect width="32" height="32" rx="8" fill="#ea580c"/>
-  <path d="M10 21V11h2.4l3.6 6 3.6-6H22v10h-2.3v-6.1L16.6 20h-1.2l-3.1-5.1V21z" fill="#fff"/>
+  <!-- Full-bleed square: no corner radius, so the tab icon has no white edges. -->
+  <rect width="32" height="32" fill="#ea580c"/>
+  <!-- "iB" drawn as paths rather than <text>: a favicon is rendered without
+       the page's fonts, so real glyphs would fall back to whatever the OS has. -->
+  <g fill="#fff">
+    <!-- i: dot + stem -->
+    <rect x="7.5" y="8" width="3" height="3" rx="1.5"/>
+    <rect x="7.5" y="13" width="3" height="11"/>
+    <!-- B: stem, upper bowl, lower bowl -->
+    <rect x="14" y="8" width="3" height="16"/>
+    <path d="M16 8h4.6a4 4 0 0 1 0 8H16v-3h4.2a1.1 1.1 0 0 0 0-2.2H16z"/>
+    <path d="M16 16h5.1a4 4 0 0 1 0 8H16v-3h4.7a1.1 1.1 0 0 0 0-2.2H16z"/>
+  </g>
 </svg>

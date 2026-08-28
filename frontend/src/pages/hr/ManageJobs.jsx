@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import { Plus, Users, MapPin, Trash2, Circle, FolderKanban, Pencil, MessageSquare } from 'lucide-react'
+import { Plus, Users, MapPin, Trash2, Circle, FolderKanban, Pencil, MessageSquare, Wallet, CalendarDays } from 'lucide-react'
 import { Card, CardBody } from '../../components/ui/Card'
 import Badge from '../../components/ui/Badge'
 import Button from '../../components/ui/Button'
@@ -9,6 +9,7 @@ import EmptyState from '../../components/ui/EmptyState'
 import { api } from '../../lib/api'
 import { useFetch } from '../../lib/useFetch'
 import { useToast } from '../../context/ToastContext'
+import { formatSalary, formatDeadline, isDeadlineSoon } from '../../lib/job'
 
 const statusTone = { open: 'green', closed: 'gray', draft: 'amber' }
 
@@ -63,14 +64,26 @@ export default function ManageJobs() {
                   <div>
                     <div className="flex items-center gap-2">
                       <h3 className="text-lg font-semibold text-ink-900">{j.title}</h3>
-                      <Badge tone={statusTone[j.status] || 'gray'}>
-                        <Circle className="h-2 w-2 fill-current" /> {j.status}
+                      <Badge tone={j.isExpired ? 'red' : statusTone[j.status] || 'gray'}>
+                        <Circle className="h-2 w-2 fill-current" /> {j.isExpired ? 'expired' : j.status}
                       </Badge>
                     </div>
                     <div className="mt-1 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-ink-500">
                       <span className="flex items-center gap-1"><MapPin className="h-3.5 w-3.5" />{j.location}</span>
                       <span className="flex items-center gap-1"><Users className="h-3.5 w-3.5" />{j.applicantsCount} applicants</span>
                       <span>Apply ≥ {j.applyThreshold}% · Pass ≥ {j.passThreshold}%</span>
+                      {formatSalary(j) && (
+                        <span className="flex items-center gap-1"><Wallet className="h-3.5 w-3.5" />{formatSalary(j)}</span>
+                      )}
+                      {j.openings > 1 && <span>{j.openings} openings</span>}
+                      {formatDeadline(j.deadline) && (
+                        <span className={
+                          'flex items-center gap-1 ' +
+                          (j.isExpired ? 'text-red-600' : isDeadlineSoon(j.deadline) ? 'text-amber-700' : '')
+                        }>
+                          <CalendarDays className="h-3.5 w-3.5" />{formatDeadline(j.deadline)}
+                        </span>
+                      )}
                       {j.customQuestions?.length > 0 && (
                         <span className="flex items-center gap-1">
                           <MessageSquare className="h-3.5 w-3.5" />
