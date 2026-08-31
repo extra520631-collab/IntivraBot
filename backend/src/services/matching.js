@@ -51,12 +51,22 @@ export function attachMatch(jobs, scores) {
     const open = isAccepting(job)
     const m = scores.get(String(job._id))
     if (!m) return { ...job, matchScore: null, eligible: open, isExpired: isExpired(job) }
+
+    // Which skills are missing is only told to candidates who already clear
+    // the employer's bar, as preparation for the interview. Below it, the same
+    // list is a checklist to pad a CV with, so only the counts go out —
+    // withholding it in the UI alone would still leave it in this response.
+    const clearsBar = m.score >= (job.applyThreshold ?? 0)
+    const missing = m.missingSkills || []
+
     return {
       ...job,
       matchScore: m.score,
       matchedSkills: m.matchedSkills,
-      missingSkills: m.missingSkills,
-      eligible: open && m.score >= (job.applyThreshold ?? 0),
+      ...(clearsBar ? { missingSkills: missing } : {}),
+      matchedCount: (m.matchedSkills || []).length,
+      requiredCount: (m.matchedSkills || []).length + missing.length,
+      eligible: open && clearsBar,
       isExpired: isExpired(job),
     }
   })

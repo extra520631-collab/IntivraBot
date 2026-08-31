@@ -846,7 +846,7 @@ export default function CandidateOnboarding() {
               <input
                 ref={resumeRef}
                 type="file"
-                accept=".pdf,.doc,.docx,application/pdf"
+                accept=".pdf,application/pdf"
                 className="hidden"
                 onChange={uploadResume}
               />
@@ -870,7 +870,7 @@ export default function CandidateOnboarding() {
                   <div>
                     <div className="text-sm font-semibold text-ink-900">Upload your CV</div>
                     <div className="text-xs text-ink-500">
-                      {resumeUrl ? 'Uploaded — used for ATS matching' : 'PDF or DOCX — AI skills extract karega'}
+                      {resumeUrl ? 'Uploaded — used for ATS matching' : 'PDF only — AI skills extract karega'}
                     </div>
                   </div>
                 </div>

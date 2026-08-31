@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { useNavigate, useLocation, Link } from 'react-router-dom'
 import {
   ScanFace, Mic, Video, Type, ShieldCheck, AlertTriangle,
-  ChevronRight, Circle, Volume2, Loader2, CheckCircle2, XCircle, Square, Smile, Sparkles,
+  ChevronRight, Volume2, Loader2, CheckCircle2, XCircle, Square, Smile, Sparkles,
 } from 'lucide-react'
 import Logo from '../../components/ui/Logo'
 import Button from '../../components/ui/Button'
@@ -25,6 +25,14 @@ const textReasons = [
 const SpeechRecognition =
   typeof window !== 'undefined' && (window.SpeechRecognition || window.webkitSpeechRecognition)
 
+// How often the webcam is sampled during the interview. Fast enough that
+// nobody can swap places between reads, slow enough not to flood a small
+// server or a candidate's uplink.
+const FRAME_INTERVAL_MS = 4000
+// Recent frames kept in memory to smooth the on-screen status. A single bad
+// frame should never make the UI shout at the candidate.
+const HISTORY_LEN = 5
+
 export default function Interview() {
   const navigate = useNavigate()
   const location = useLocation()
@@ -44,8 +52,10 @@ export default function Interview() {
   const [faceEnabled, setFaceEnabled] = useState(false)
   const [voiceEnabled, setVoiceEnabled] = useState(false)
   const [camOn, setCamOn] = useState(false)
-  const [live, setLive] = useState(null) // { faceCount, singlePerson, emotion, match, baselineAvailable }
+  const [live, setLive] = useState(null) // { faceCount, singlePerson, emotion, match, quality, baselineAvailable }
   const [liveVoice, setLiveVoice] = useState(null) // { match, multiVoice, isReference }
+  // Recent frames, used to decide what the candidate is shown — see liveRows.
+  const [frameHistory, setFrameHistory] = useState([])
 
   const [interview, setInterview] = useState(null)
   const [current, setCurrent] = useState(null) // { order, text }
@@ -60,6 +70,11 @@ export default function Interview() {
   const recognitionRef = useRef(null)
   const videoRef = useRef(null)
   const canvasRef = useRef(null)
+  // Guards the frame loop against overlapping uploads on a slow connection.
+  const frameInFlightRef = useRef(false)
+  // Set while an answer is being scored, so monitoring stands down rather than
+  // competing with it for the AI service.
+  const submittingRef = useRef(false)
   const streamRef = useRef(null)
   // Audio capture for voice biometrics
   const audioCtxRef = useRef(null)
@@ -118,7 +133,15 @@ export default function Interview() {
     ;(async () => {
       try {
         const stream = await navigator.mediaDevices.getUserMedia({
-          video: { width: 480, height: 360 }, audio: false,
+          // 720p where the camera offers it: the emotion model works on a
+          // small aligned crop of the face, so a 480x360 frame leaves it
+          // almost no pixels to read once the candidate sits back.
+          video: {
+            width: { ideal: 1280 },
+            height: { ideal: 720 },
+            facingMode: 'user',
+          },
+          audio: false,
         })
         if (cancelled) { stream.getTracks().forEach((t) => t.stop()); return }
         streamRef.current = stream
@@ -141,26 +164,70 @@ export default function Interview() {
     streamRef.current = null
   }, [])
 
-  // Capture one frame whenever a new question appears (camera has settled).
+  // Monitor continuously, not once per question. One frame per question left
+  // most of the interview unobserved: someone could sit down, swap places or
+  // read from a second screen between questions and nothing would record it.
   useEffect(() => {
-    if (phase !== 'active' || !faceEnabled || !camOn || !current || !interview?._id) return
-    const t = setTimeout(() => captureFrame(), 1200)
-    return () => clearTimeout(t)
+    if (phase !== 'active' || !faceEnabled || !camOn || !interview?._id) return
+
+    let stopped = false
+    let timer
+
+    const tick = async () => {
+      if (stopped) return
+      await captureFrame()
+      if (!stopped) timer = setTimeout(tick, FRAME_INTERVAL_MS)
+    }
+    // Let the camera settle (exposure, autofocus) before the first read.
+    timer = setTimeout(tick, 1500)
+
+    return () => { stopped = true; clearTimeout(timer) }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [current?.order, camOn, phase])
+  }, [camOn, phase, faceEnabled, interview?._id])
 
   async function captureFrame() {
     const video = videoRef.current
     const canvas = canvasRef.current
     if (!video || !canvas || !video.videoWidth) return
-    canvas.width = video.videoWidth
-    canvas.height = video.videoHeight
-    canvas.getContext('2d').drawImage(video, 0, 0, canvas.width, canvas.height)
-    const dataUrl = canvas.toDataURL('image/jpeg', 0.6)
+    // Skip while the tab is hidden: the browser throttles or freezes the video
+    // element, so the frame would be stale or black and read as "no face".
+    if (typeof document !== 'undefined' && document.hidden) return
+    // Pause while an answer is being scored. A frame competing for the same
+    // AI service only makes the candidate wait longer for their next question,
+    // and the few seconds skipped here change nothing in the record.
+    if (submittingRef.current) return
+    // Never let a slow round-trip stack up behind the interval.
+    if (frameInFlightRef.current) return
+    frameInFlightRef.current = true
+
+    // Downscale the long edge to 640px: past that the detector gains nothing
+    // and every extra pixel is upload time on a candidate's connection.
+    const scale = Math.min(1, 640 / Math.max(video.videoWidth, video.videoHeight))
+    canvas.width = Math.round(video.videoWidth * scale)
+    canvas.height = Math.round(video.videoHeight * scale)
+    const ctx = canvas.getContext('2d')
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
+    // 0.8 rather than 0.6: JPEG artefacts at low quality blur exactly the
+    // fine detail around the eyes and mouth the emotion model reads.
+    const dataUrl = canvas.toDataURL('image/jpeg', 0.8)
+
     try {
-      const res = await api.post(`/interviews/${interview._id}/frame`, { frame: dataUrl })
-      if (res.ok) setLive(res)
+      const res = await api.post(`/interviews/${interview._id}/frame`, {
+        frame: dataUrl,
+        at: Date.now(),
+      })
+      if (res.ok) {
+        setLive(res)
+        setFrameHistory((h) => [...h.slice(-(HISTORY_LEN - 1)), {
+          singlePerson: res.singlePerson,
+          matched: res.match?.matched,
+          reliable: res.quality?.usable !== false,
+          confidence: res.emotion?.confidence ?? null,
+          at: Date.now(),
+        }])
+      }
     } catch { /* face monitoring is best-effort — never block the interview */ }
+    finally { frameInFlightRef.current = false }
   }
 
   // ── Audio capture for voice biometrics (Phase 6) ────────────────────────────
@@ -257,18 +324,58 @@ export default function Interview() {
   // Rows for the live-verification card, driven by the latest frame result.
   function liveRows() {
     const rows = []
+    // Judge on the recent history rather than the newest frame alone: at one
+    // frame every few seconds, a single glance away would otherwise turn the
+    // panel red mid-sentence and rattle the candidate for no reason.
+    const recent = frameHistory.filter((f) => f.reliable)
+    const share = (pred) => (recent.length ? recent.filter(pred).length / recent.length : 0)
+    const settled = recent.length >= 2
+    // A frame the camera could not capture properly is not evidence.
+    const badFrame = live?.quality?.usable === false
+    const issue = live?.quality?.issues?.[0]
+
     // Face match vs the candidate's baseline photo
-    if (!faceEnabled) rows.push([ScanFace, 'Face match', 'Off', 'gray'])
-    else if (live?.match?.score != null) rows.push([ScanFace, 'Face match', `${live.match.score}%`, live.match.matched ? 'green' : 'red'])
-    else if (live && live.baselineAvailable === false) rows.push([ScanFace, 'Face match', 'No baseline photo', 'amber'])
-    else rows.push([ScanFace, 'Face match', camOn ? 'Checking…' : '—', 'gray'])
+    if (!faceEnabled) {
+      rows.push([ScanFace, 'Face match', 'Off', 'gray'])
+    } else if (live && live.baselineAvailable === false) {
+      rows.push([ScanFace, 'Face match', 'No baseline photo', 'amber'])
+    } else if (live?.match?.score != null) {
+      // Only call it a mismatch once it persists; one frame is not proof.
+      const persistent = settled && share((f) => f.matched === false) >= 0.5
+      rows.push([
+        ScanFace,
+        'Face match',
+        `${live.match.score}%`,
+        persistent ? 'red' : live.match.matched ? 'green' : 'amber',
+      ])
+    } else {
+      rows.push([ScanFace, 'Face match', camOn ? 'Checking…' : '—', 'gray'])
+    }
+
+    // Camera conditions — actionable, unlike a bare "no face".
+    if (faceEnabled && camOn && badFrame) {
+      const label =
+        issue === 'too_dark' ? 'Too dark' :
+        issue === 'too_bright' ? 'Too bright' :
+        issue === 'blurry' ? 'Hold still' :
+        issue === 'face_too_small' ? 'Move closer' : 'Poor image'
+      rows.push([Video, 'Camera', label, 'amber'])
+    }
+
     // Confidence (emotion)
     if (live?.emotion) rows.push([Smile, 'Confidence', `${live.emotion.confidence}%`, live.emotion.confidence >= 50 ? 'green' : 'amber'])
     else rows.push([Smile, 'Confidence', faceEnabled ? (camOn ? 'Reading…' : '—') : 'Off', 'gray'])
+
     // Single person in frame
     if (live) {
       const val = live.singlePerson ? 'Confirmed' : live.faceCount === 0 ? 'No face' : `${live.faceCount} people`
-      rows.push([ShieldCheck, 'Single person', val, live.singlePerson ? 'green' : 'red'])
+      const persistent = settled && share((f) => !f.singlePerson) >= 0.5
+      rows.push([
+        ShieldCheck,
+        'Single person',
+        val,
+        live.singlePerson ? 'green' : persistent ? 'red' : 'amber',
+      ])
     } else {
       rows.push([ShieldCheck, 'Single person', '—', 'gray'])
     }
@@ -339,6 +446,7 @@ export default function Interview() {
     if (mode === 'text' && !reason) { setError('Select a reason to use text mode.'); return }
     setError('')
     if (mode === 'voice') sendVoiceClip() // analyse this answer's audio (non-blocking)
+    submittingRef.current = true
     setPhase('submitting')
     try {
       const res = await api.post(`/interviews/${interview._id}/answer`, {
@@ -358,6 +466,8 @@ export default function Interview() {
     } catch (err) {
       setError(err.message || 'Could not submit your answer')
       setPhase('active')
+    } finally {
+      submittingRef.current = false
     }
   }
 
@@ -382,10 +492,12 @@ export default function Interview() {
   if (phase === 'loading') {
     return (
       <FullScreen>
-        <div className="text-center">
+        <div className="max-w-sm text-center">
           <Spinner size={30} />
-          <p className="mt-4 text-sm font-medium text-ink-600">Preparing your interview…</p>
-          <p className="text-xs text-ink-400">The AI interviewer is getting ready.</p>
+          <p className="mt-4 text-base font-semibold text-ink-900">Preparing your interview</p>
+          <p className="mt-1 text-sm text-ink-500">
+            Setting up the camera and generating your first question.
+          </p>
         </div>
       </FullScreen>
     )
@@ -394,10 +506,12 @@ export default function Interview() {
   if (phase === 'finishing') {
     return (
       <FullScreen>
-        <div className="text-center">
+        <div className="max-w-sm text-center">
           <Spinner size={30} />
-          <p className="mt-4 text-sm font-medium text-ink-600">Scoring your interview…</p>
-          <p className="text-xs text-ink-400">Building your final report.</p>
+          <p className="mt-4 text-base font-semibold text-ink-900">Scoring your interview</p>
+          <p className="mt-1 text-sm text-ink-500">
+            Reviewing every answer and building your report. This takes a few seconds.
+          </p>
         </div>
       </FullScreen>
     )
@@ -412,9 +526,9 @@ export default function Interview() {
             <XCircle className="h-6 w-6" />
           </span>
           <h2 className="mt-4 text-lg font-semibold text-ink-900">
-            {noApp ? 'No interview selected' : 'Couldn’t start the interview'}
+            {noApp ? 'No interview selected' : 'Could not start the interview'}
           </h2>
-          <p className="mt-1 text-sm text-ink-500">
+          <p className="mt-1.5 text-sm leading-relaxed text-ink-500">
             {noApp
               ? 'Open an application first, then start its AI interview.'
               : error}
@@ -432,85 +546,152 @@ export default function Interview() {
   const last = qNumber >= total
   const busy = phase === 'submitting'
 
+  // Verification is only worth a whole panel when something needs attention;
+  // otherwise a single "all clear" line keeps the focus on the question.
+  const rows = liveRows()
+  const alerts = rows.filter(([, , , tone]) => tone === 'red' || tone === 'amber')
+  const monitoringOn = faceEnabled || voiceEnabled
+
   return (
-    <div className="flex min-h-screen flex-col bg-white">
-      {/* Top bar */}
-      <header className="flex h-16 items-center justify-between border-b border-ink-100 px-4 sm:px-6">
-        <Logo />
-        <div className="flex items-center gap-3">
-          {isPractice && (
-            <Badge tone="brand">
-              <Sparkles className="h-3.5 w-3.5" /> Practice · not scored
-            </Badge>
-          )}
-          {(() => {
-            // geminiEnabled reflects the service's status at interview start;
-            // current?.source reflects whether *this* question actually came
-            // from Gemini or the offline bank (e.g. a mid-interview outage).
-            const liveNow = geminiEnabled && current?.source !== 'fallback'
-            return (
-              <Badge tone={liveNow ? 'green' : 'amber'}>
-                <ShieldCheck className="h-3.5 w-3.5" /> {liveNow ? 'Gemini live' : 'Fallback mode'}
+    <div className="flex min-h-screen flex-col bg-ink-50/40">
+      {/* Top bar: identity left, run status right, progress as a hairline
+          underneath so it reads at a glance without taking vertical space. */}
+      <header className="sticky top-0 z-20 border-b border-ink-100 bg-white/90 backdrop-blur">
+        <div className="mx-auto flex h-16 max-w-7xl items-center justify-between gap-4 px-4 sm:px-6">
+          <Logo />
+
+          <div className="flex items-center gap-2 sm:gap-3">
+            {isPractice && (
+              <Badge tone="brand">
+                <Sparkles className="h-3.5 w-3.5" /> Practice
               </Badge>
-            )
-          })()}
-          <span className="text-sm text-ink-500">Question {qNumber} of {total}</span>
+            )}
+            {(() => {
+              // geminiEnabled reflects the service's status at interview start;
+              // current?.source reflects whether *this* question actually came
+              // from Gemini or the offline bank (e.g. a mid-interview outage).
+              const liveNow = geminiEnabled && current?.source !== 'fallback'
+              return (
+                <span
+                  title={liveNow ? 'Questions are being generated live' : 'Using the offline question bank'}
+                  className={cn(
+                    'hidden items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium sm:inline-flex',
+                    liveNow ? 'bg-emerald-50 text-emerald-700' : 'bg-amber-50 text-amber-700'
+                  )}
+                >
+                  <span className={cn('h-1.5 w-1.5 rounded-full', liveNow ? 'bg-emerald-500' : 'bg-amber-500')} />
+                  {liveNow ? 'AI live' : 'Offline mode'}
+                </span>
+              )
+            })()}
+
+            <div className="flex items-baseline gap-1.5 rounded-lg bg-ink-50 px-3 py-1.5">
+              <span className="text-sm font-bold tabular-nums text-ink-900">{qNumber}</span>
+              <span className="text-xs text-ink-400">/ {total}</span>
+            </div>
+          </div>
+        </div>
+
+        <div className="h-0.5 w-full bg-ink-100">
+          <div
+            className="h-full bg-brand-600 transition-all duration-500"
+            style={{ width: `${progress}%` }}
+          />
         </div>
       </header>
 
-      <div className="mx-auto grid w-full max-w-6xl flex-1 gap-6 p-4 sm:p-6 lg:grid-cols-3">
-        {/* Left: camera + monitoring (visual only) */}
-        <div className="space-y-4">
-          <div className="relative aspect-video overflow-hidden rounded-xl bg-ink-900">
-            <video
-              ref={videoRef}
-              muted
-              playsInline
-              className={cn('h-full w-full object-cover', !camOn && 'opacity-0')}
-            />
-            {!camOn && (
-              <div className="absolute inset-0 flex items-center justify-center text-ink-400">
-                <div className="text-center">
-                  <Video className="mx-auto h-8 w-8" />
-                  <p className="mt-2 text-xs">
-                    {faceEnabled ? 'Starting camera…' : 'Camera monitoring off'}
-                  </p>
+      <div className="mx-auto grid w-full max-w-7xl flex-1 items-start gap-5 p-4 sm:p-6 lg:grid-cols-[380px_minmax(0,1fr)]">
+        {/* Left rail: camera, verification, last score. Sticky so it stays put
+            while a long answer scrolls. */}
+        <div className="space-y-4 lg:sticky lg:top-24">
+          <div className="overflow-hidden rounded-xl border border-ink-200 bg-white shadow-sm">
+            <div className="relative aspect-[4/3] bg-ink-900">
+              <video
+                ref={videoRef}
+                muted
+                playsInline
+                className={cn('h-full w-full object-cover', !camOn && 'opacity-0')}
+              />
+              {!camOn && (
+                <div className="absolute inset-0 flex items-center justify-center">
+                  <div className="text-center text-ink-500">
+                    <Video className="mx-auto h-7 w-7" />
+                    <p className="mt-2 text-xs">
+                      {faceEnabled ? 'Starting camera…' : 'Camera off'}
+                    </p>
+                  </div>
                 </div>
-              </div>
-            )}
-            {camOn && (
-              <span className="absolute left-3 top-3 flex items-center gap-1.5 rounded-md bg-red-600 px-2 py-1 text-[11px] font-semibold text-white">
-                <Circle className="h-2 w-2 fill-current" /> REC
+              )}
+              {camOn && (
+                <span className="absolute left-2.5 top-2.5 flex items-center gap-1.5 rounded-full bg-black/60 px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-white backdrop-blur">
+                  <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-red-500" />
+                  Recording
+                </span>
+              )}
+              <span className="absolute bottom-2.5 left-2.5 truncate rounded-md bg-black/50 px-2 py-1 text-[11px] font-medium text-white backdrop-blur">
+                {user?.name || 'Candidate'}
               </span>
-            )}
-            <span className="absolute bottom-3 left-3 rounded-md bg-black/50 px-2 py-1 text-[11px] font-medium text-white">
-              {user?.name || 'Candidate'}
-            </span>
+            </div>
+
+            {/* Verification summary. Collapses to one line when nothing is
+                wrong — four "OK" rows every second is noise, not information. */}
+            <div className="border-t border-ink-100 p-3">
+              {!monitoringOn ? (
+                <p className="text-xs text-ink-400">Verification is off for this interview.</p>
+              ) : alerts.length === 0 ? (
+                <p className="flex items-center gap-1.5 text-xs font-medium text-emerald-700">
+                  <CheckCircle2 className="h-3.5 w-3.5" /> Verification looks good
+                </p>
+              ) : (
+                <div className="space-y-1.5">
+                  {alerts.map(([Icon, label, val, tone]) => (
+                    <div key={label} className="flex items-center justify-between gap-2">
+                      <span className="flex items-center gap-1.5 text-xs text-ink-600">
+                        <Icon className="h-3.5 w-3.5 text-ink-400" /> {label}
+                      </span>
+                      <span className={cn(
+                        'shrink-0 rounded px-1.5 py-0.5 text-[11px] font-semibold',
+                        tone === 'red' ? 'bg-red-50 text-red-700' : 'bg-amber-50 text-amber-700'
+                      )}>
+                        {val}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {monitoringOn && (
+                <details className="group mt-2">
+                  <summary className="cursor-pointer list-none text-[11px] font-medium text-ink-400 hover:text-ink-600">
+                    <span className="group-open:hidden">Show all checks</span>
+                    <span className="hidden group-open:inline">Hide checks</span>
+                  </summary>
+                  <div className="mt-2 space-y-1.5 border-t border-ink-100 pt-2">
+                    {rows.map(([Icon, label, val, tone]) => (
+                      <div key={label} className="flex items-center justify-between gap-2">
+                        <span className="flex items-center gap-1.5 text-xs text-ink-500">
+                          <Icon className="h-3.5 w-3.5 text-ink-400" /> {label}
+                        </span>
+                        <Badge tone={tone}>{val}</Badge>
+                      </div>
+                    ))}
+                  </div>
+                </details>
+              )}
+            </div>
           </div>
           <canvas ref={canvasRef} className="hidden" />
 
-          <div className="card-base p-4">
-            <div className="mb-3 text-xs font-semibold uppercase tracking-wide text-ink-400">Live verification</div>
-            <div className="space-y-3">
-              {liveRows().map(([Icon, label, val, tone]) => (
-                <div key={label} className="flex items-center justify-between">
-                  <span className="flex items-center gap-2 text-sm text-ink-600">
-                    <Icon className="h-4 w-4 text-ink-400" /> {label}
-                  </span>
-                  <Badge tone={tone}>{val}</Badge>
-                </div>
-              ))}
-            </div>
-          </div>
-
-          {/* Live score of the previous answer */}
+          {/* Score of the previous answer */}
           {lastResult && (
-            <div className="card-base p-4">
-              <div className="mb-2 flex items-center justify-between text-sm">
-                <span className="font-medium text-ink-700">Last answer score</span>
-                <span className="font-semibold text-brand-600">{lastResult.score}%</span>
+            <div className="rounded-xl border border-ink-200 bg-white p-4 shadow-sm">
+              <div className="flex items-baseline justify-between">
+                <span className="text-xs font-semibold uppercase tracking-wide text-ink-400">
+                  Previous answer
+                </span>
+                <span className="text-lg font-bold tabular-nums text-brand-600">{lastResult.score}%</span>
               </div>
-              <Progress value={lastResult.score} />
+              <Progress value={lastResult.score} className="mt-2" />
               {lastResult.feedback && (
                 <p className="mt-3 text-xs leading-relaxed text-ink-500">{lastResult.feedback}</p>
               )}
@@ -518,87 +699,112 @@ export default function Interview() {
           )}
         </div>
 
-        {/* Right: question + answer */}
-        <div className="lg:col-span-2">
-          <div className="flex h-full flex-col card-base p-6">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-brand-600">
-                <Volume2 className="h-4 w-4" />
-                {/* Employer-written questions are labelled so the candidate
-                    knows a human chose this one, not the AI. */}
-                {current?.source === 'hr' ? 'Question from the employer' : 'AI Interviewer'}
+        {/* Right: the question and the answer — the only things that matter */}
+        <div className="min-w-0">
+          <div className="flex flex-col rounded-xl border border-ink-200 bg-white shadow-sm">
+            {/* Question */}
+            <div className="border-b border-ink-100 p-5 sm:p-6">
+              <div className="flex items-start justify-between gap-4">
+                <span className={cn(
+                  'inline-flex shrink-0 items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-semibold',
+                  current?.source === 'hr' ? 'bg-brand-50 text-brand-700' : 'bg-ink-100 text-ink-600'
+                )}>
+                  {/* Employer-written questions are labelled so the candidate
+                      knows a human chose this one, not the AI. */}
+                  {current?.source === 'hr' ? 'From the employer' : 'AI interviewer'}
+                </span>
+                <button
+                  onClick={() => speak(current?.text)}
+                  title="Read the question aloud"
+                  className="inline-flex shrink-0 items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-medium text-ink-500 transition hover:bg-ink-50 hover:text-ink-900"
+                >
+                  <Volume2 className="h-3.5 w-3.5" /> Replay
+                </button>
               </div>
-              <button
-                onClick={() => speak(current?.text)}
-                className="inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-xs font-medium text-ink-500 hover:bg-ink-50"
-              >
-                <Volume2 className="h-3.5 w-3.5" /> Replay
-              </button>
-            </div>
-            <h2 className="mt-3 text-xl font-semibold leading-relaxed text-ink-900">
-              {current?.text}
-            </h2>
 
-            {/* Mode toggle */}
-            <div className="mt-6 flex items-center gap-2">
+              <h2 className="mt-4 text-xl font-semibold leading-relaxed text-ink-900 sm:text-2xl">
+                {current?.text}
+              </h2>
+            </div>
+
+            <div className="p-5 sm:p-6">
+            {/* Mode toggle — a segmented control rather than two loose buttons */}
+            <div className="inline-flex rounded-lg border border-ink-200 bg-ink-50 p-1">
               <button
                 onClick={() => setMode('voice')}
+                disabled={!SpeechRecognition}
+                title={SpeechRecognition ? 'Answer by speaking' : 'Voice is not supported in this browser'}
                 className={cn(
-                  'inline-flex items-center gap-2 rounded-lg border px-3.5 py-2 text-sm font-semibold transition',
-                  mode === 'voice' ? 'border-brand-500 bg-brand-50 text-brand-700' : 'border-ink-200 text-ink-600'
+                  'inline-flex items-center gap-2 rounded-md px-3.5 py-1.5 text-sm font-semibold transition disabled:cursor-not-allowed disabled:opacity-40',
+                  mode === 'voice' ? 'bg-white text-ink-900 shadow-sm' : 'text-ink-500 hover:text-ink-700'
                 )}
               >
-                <Mic className="h-4 w-4" /> Voice {SpeechRecognition ? '(default)' : '(not supported)'}
+                <Mic className="h-4 w-4" /> Voice
               </button>
               <button
                 onClick={() => { stopRecording(); setMode('text') }}
                 className={cn(
-                  'inline-flex items-center gap-2 rounded-lg border px-3.5 py-2 text-sm font-semibold transition',
-                  mode === 'text' ? 'border-brand-500 bg-brand-50 text-brand-700' : 'border-ink-200 text-ink-600'
+                  'inline-flex items-center gap-2 rounded-md px-3.5 py-1.5 text-sm font-semibold transition',
+                  mode === 'text' ? 'bg-white text-ink-900 shadow-sm' : 'text-ink-500 hover:text-ink-700'
                 )}
               >
-                <Type className="h-4 w-4" /> Text
+                <Type className="h-4 w-4" /> Type
               </button>
             </div>
 
             {/* Answer area */}
-            <div className="mt-4 flex-1">
+            <div className="mt-4">
               {mode === 'voice' ? (
                 <div className="space-y-3">
-                  <div className="flex flex-col items-center justify-center rounded-xl border border-dashed border-ink-200 bg-ink-50/50 p-6 text-center">
+                  <div className={cn(
+                    'flex items-center gap-4 rounded-xl border p-4 transition',
+                    recording ? 'border-red-200 bg-red-50/50' : 'border-ink-200 bg-ink-50/50'
+                  )}>
                     <button
                       onClick={recording ? stopRecording : startRecording}
                       disabled={!SpeechRecognition}
+                      aria-label={recording ? 'Stop recording' : 'Start recording'}
                       className={cn(
-                        'flex h-16 w-16 items-center justify-center rounded-full text-white transition disabled:opacity-40',
-                        recording ? 'bg-red-600 animate-pulse' : 'bg-brand-600 hover:bg-brand-700'
+                        'relative flex h-14 w-14 shrink-0 items-center justify-center rounded-full text-white transition disabled:opacity-40',
+                        recording ? 'bg-red-600 hover:bg-red-700' : 'bg-brand-600 hover:bg-brand-700'
                       )}
                     >
-                      {recording ? <Square className="h-6 w-6" /> : <Mic className="h-7 w-7" />}
+                      {recording && (
+                        <span className="absolute inset-0 animate-ping rounded-full bg-red-500 opacity-50" />
+                      )}
+                      <span className="relative">
+                        {recording ? <Square className="h-5 w-5" /> : <Mic className="h-6 w-6" />}
+                      </span>
                     </button>
-                    <p className="mt-3 text-sm font-medium text-ink-700">
-                      {!SpeechRecognition
-                        ? 'Voice not supported in this browser — use Text mode.'
-                        : recording ? 'Listening… tap to stop' : 'Tap to record your answer'}
-                    </p>
-                    {SpeechRecognition && (
-                      <p className="text-xs text-ink-400">Your speech is transcribed live below.</p>
-                    )}
+                    <div className="min-w-0">
+                      <p className="text-sm font-semibold text-ink-900">
+                        {!SpeechRecognition
+                          ? 'Voice not supported here'
+                          : recording ? 'Listening…' : 'Tap to record your answer'}
+                      </p>
+                      <p className="mt-0.5 text-xs text-ink-500">
+                        {!SpeechRecognition
+                          ? 'Switch to Type to answer instead.'
+                          : recording
+                            ? 'Speak naturally — tap again when you are done.'
+                            : 'Your speech is transcribed below, and you can edit it before submitting.'}
+                      </p>
+                    </div>
                   </div>
                   <textarea
                     value={answer}
                     onChange={(e) => setAnswer(e.target.value)}
-                    rows={4}
+                    rows={6}
                     disabled={recording}
-                    placeholder="Your transcribed answer appears here — stop recording to edit it before submitting."
+                    placeholder="Your transcribed answer appears here."
                     className="input-base resize-none disabled:cursor-not-allowed disabled:bg-ink-50"
                   />
                 </div>
               ) : (
                 <div className="space-y-3">
-                  <div className="rounded-lg border border-amber-200 bg-amber-50 p-3">
+                  <div className="rounded-xl border border-amber-200 bg-amber-50 p-3.5">
                     <div className="flex items-center gap-2 text-sm font-semibold text-amber-800">
-                      <AlertTriangle className="h-4 w-4" /> A reason is required for text mode
+                      <AlertTriangle className="h-4 w-4 shrink-0" /> Why are you typing instead?
                     </div>
                     <Select className="mt-2" value={reason} onChange={(e) => setReason(e.target.value)}>
                       <option value="">Select a reason…</option>
@@ -606,35 +812,47 @@ export default function Interview() {
                         <option key={r} value={r}>{r}</option>
                       ))}
                     </Select>
-                    <p className="mt-1.5 text-xs text-amber-700">
-                      Note: voice verification is skipped for this answer and it is flagged in the HR report.
+                    <p className="mt-2 text-xs leading-relaxed text-amber-700">
+                      Voice verification is skipped for this answer, and the employer sees that it was typed.
                     </p>
                   </div>
                   <textarea
                     disabled={!reason}
                     value={answer}
                     onChange={(e) => setAnswer(e.target.value)}
-                    rows={5}
+                    rows={7}
                     placeholder={reason ? 'Type your answer…' : 'Select a reason above first'}
                     className="input-base resize-none disabled:cursor-not-allowed disabled:bg-ink-50"
                   />
                 </div>
               )}
 
-              {error && <p className="mt-3 text-sm text-red-600">{error}</p>}
+              {error && (
+                <p className="mt-3 flex items-start gap-2 rounded-lg bg-red-50 p-3 text-sm text-red-700">
+                  <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" /> {error}
+                </p>
+              )}
             </div>
 
-            <div className="mt-6 flex items-center justify-between border-t border-ink-100 pt-4">
-              <Progress value={progress} className="mr-4 max-w-[200px]" />
-              <Button onClick={submit} disabled={busy}>
+            <div className="mt-5 flex flex-col-reverse items-stretch gap-3 border-t border-ink-100 pt-4 sm:flex-row sm:items-center sm:justify-between">
+              <p className="text-xs text-ink-400">
+                {answer.trim()
+                  ? `${answer.trim().split(/\s+/).length} words`
+                  : 'An empty answer scores zero.'}
+              </p>
+              <Button size="lg" onClick={submit} disabled={busy} className="sm:w-auto">
                 {busy ? (
-                  <><Loader2 className="h-4 w-4 animate-spin" /> Scoring…</>
+                  <>
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    {last ? 'Finishing…' : 'Scoring & writing the next question…'}
+                  </>
                 ) : last ? (
                   <>Finish interview <CheckCircle2 className="h-4 w-4" /></>
                 ) : (
                   <>Next question <ChevronRight className="h-4 w-4" /></>
                 )}
               </Button>
+            </div>
             </div>
           </div>
         </div>
@@ -645,8 +863,8 @@ export default function Interview() {
 
 function FullScreen({ children }) {
   return (
-    <div className="flex min-h-screen flex-col bg-white">
-      <header className="flex h-16 items-center border-b border-ink-100 px-4 sm:px-6">
+    <div className="flex min-h-screen flex-col bg-ink-50/40">
+      <header className="flex h-16 items-center border-b border-ink-100 bg-white px-4 sm:px-6">
         <Logo />
       </header>
       <div className="flex flex-1 items-center justify-center p-6 text-brand-600">{children}</div>

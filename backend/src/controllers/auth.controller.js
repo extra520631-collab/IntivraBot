@@ -8,8 +8,9 @@ import Notification from '../models/Notification.js'
 import AppError from '../utils/AppError.js'
 import { asyncHandler } from '../utils/asyncHandler.js'
 import { signToken } from '../utils/token.js'
-import { env } from '../config/env.js'
+import { env, mailEnabled } from '../config/env.js'
 import { companyRegex } from '../utils/companyMatch.js'
+import { sendPasswordResetEmail } from '../services/mailer.js'
 
 const sendAuth = (res, status, user) => {
   const token = signToken(user._id, user.role)
@@ -249,11 +250,31 @@ export const forgotPassword = asyncHandler(async (req, res) => {
   const rawToken = user.createResetToken()
   await user.save({ validateBeforeSave: false })
 
-  // TODO (later phase): email the link. For now, in dev we return the token so
-  // the reset flow can be tested end-to-end without an email provider.
-  if (!env.isProd) {
-    return res.json({ ...genericResponse, devResetToken: rawToken })
+  // The link points at the frontend, which reads the token out of the query
+  // string and posts it back to /reset-password.
+  const resetUrl = `${env.clientUrls[0]}/reset-password?token=${rawToken}`
+
+  const sent = await sendPasswordResetEmail({
+    to: user.email,
+    name: user.name,
+    resetUrl,
+    expiresMinutes: 30,
+  })
+
+  // With no mail provider configured (or a send that failed), hand the link
+  // back in the response outside production so the flow is still usable.
+  // Never in production: that would let anyone reset any account.
+  if (!sent && !env.isProd) {
+    return res.json({
+      ...genericResponse,
+      devResetToken: rawToken,
+      devResetUrl: resetUrl,
+      devNote: mailEnabled
+        ? 'Email failed to send - check MAIL_USER / MAIL_PASS.'
+        : 'Email is not configured. Set MAIL_USER and MAIL_PASS in backend/.env to send real emails.',
+    })
   }
+
   res.json(genericResponse)
 })
 

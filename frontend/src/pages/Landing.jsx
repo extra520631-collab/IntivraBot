@@ -15,25 +15,25 @@ import { isEmail } from '../lib/validators'
 
 const features = [
   { icon: FileScan, title: 'ATS Resume Scanning', desc: 'Resumes are parsed, skills & experience extracted, then matched to the job.' },
-  { icon: Bot, title: 'AI Interviews', desc: 'Gemini-powered adaptive questions — text or voice, in real time.' },
-  { icon: ScanFace, title: 'Face Verification', desc: 'Matched against the registration photo — the real candidate, no proxies.' },
+  { icon: Bot, title: 'AI Interviews', desc: 'Gemini-powered adaptive questions - text or voice, in real time.' },
+  { icon: ScanFace, title: 'Face Verification', desc: 'Matched against the registration photo - the real candidate, no proxies.' },
   { icon: Mic, title: 'Voice Biometrics', desc: 'A voice fingerprint confirms the speaker and detects multiple voices.' },
   { icon: BarChart3, title: 'Emotion Analysis', desc: 'Confidence, stress and engagement measured on every question.' },
-  { icon: Languages, title: 'Multi-language', desc: 'English and Urdu — candidates interview in their preferred language.' },
+  { icon: Languages, title: 'Multi-language', desc: 'English and Urdu - candidates interview in their preferred language.' },
 ]
 
 const steps = [
   { n: '01', t: 'Apply', d: 'Candidate uploads a CV and gets an ATS match score.' },
   { n: '02', t: 'Verify', d: 'Face + voice check confirms the real candidate.' },
   { n: '03', t: 'Interview', d: 'AI asks adaptive questions, emotion monitored live.' },
-  { n: '04', t: 'Report', d: 'Scores, strengths and shortlist — sent to both sides.' },
+  { n: '04', t: 'Report', d: 'Scores, strengths and shortlist - sent to both sides.' },
 ]
 
 const faqs = [
   ['Can candidates answer in text?', 'Voice is the default, but with a valid reason (mic, internet, or accessibility) a candidate can switch to text. Face verification keeps running throughout.'],
-  ['Is my data secure?', 'Yes. Passwords are encrypted, files are in secure storage, and face/voice are used only for verification — with your consent.'],
+  ['Is my data secure?', 'Yes. Passwords are encrypted, files are in secure storage, and face/voice are used only for verification - with your consent.'],
   ['Is it free?', 'During beta, IntivraBot is free for both candidates and recruiters.'],
-  ['Which languages are supported?', 'English and Urdu — candidates can interview in the language they prefer.'],
+  ['Which languages are supported?', 'English and Urdu - candidates can interview in the language they prefer.'],
 ]
 
 export default function Landing() {
@@ -58,7 +58,7 @@ export default function Landing() {
               <span className="text-brand-600">AI-driven interviews</span>
             </h1>
             <p className="animate-fade-up mx-auto mt-4 max-w-2xl text-lg text-ink-500" style={{ animationDelay: '160ms' }}>
-              IntivraBot automates the first round of recruitment — resume screening,
+              IntivraBot automates the first round of recruitment - resume screening,
               AI interviews, face &amp; voice verification, and detailed reports. Save HR
               time and remove bias.
             </p>
@@ -95,7 +95,7 @@ export default function Landing() {
       <section id="features" className="mx-auto max-w-6xl px-4 py-12 sm:px-6">
         <Reveal className="mb-8 text-center">
           <h2 className="text-3xl font-bold text-ink-900">One platform, the whole pipeline</h2>
-          <p className="mt-2 text-ink-500">Other tools cover a single stage — IntivraBot covers the entire journey.</p>
+          <p className="mt-2 text-ink-500">Other tools cover a single stage - IntivraBot covers the entire journey.</p>
         </Reveal>
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
           {features.map((f, i) => (
@@ -199,7 +199,7 @@ export default function Landing() {
             <div className="md:col-span-2">
               <Logo />
               <p className="mt-3 max-w-xs text-sm text-ink-500">
-                AI-powered recruitment platform — resume screening, intelligent interviews,
+                AI-powered recruitment platform - resume screening, intelligent interviews,
                 and identity verification in one place.
               </p>
             </div>
@@ -274,7 +274,7 @@ function ContactSection() {
       <div className="mx-auto max-w-6xl px-4 py-14 sm:px-6">
         <Reveal className="mb-8 text-center">
           <h2 className="text-3xl font-bold text-ink-900">Get in touch</h2>
-          <p className="mt-2 text-ink-500">Questions, feedback, or a demo request — we’d love to hear from you.</p>
+          <p className="mt-2 text-ink-500">Questions, feedback, or a demo request - we’d love to hear from you.</p>
         </Reveal>
 
         <div className="grid gap-8 lg:grid-cols-5">

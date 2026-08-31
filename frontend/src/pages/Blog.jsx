@@ -3,6 +3,7 @@ import { ArrowRight, Clock } from 'lucide-react'
 import PublicNavbar from '../components/layout/PublicNavbar'
 import Logo from '../components/ui/Logo'
 import Reveal from '../components/ui/Reveal'
+import { useHomePath } from '../lib/useHomePath'
 
 const posts = [
   {
@@ -45,6 +46,7 @@ const posts = [
 
 export default function Blog() {
   const [featured, ...rest] = posts
+  const home = useHomePath()
   return (
     <div className="min-h-screen bg-white">
       <PublicNavbar />
@@ -107,7 +109,7 @@ export default function Blog() {
       {/* Footer */}
       <footer className="border-t border-ink-100 bg-white">
         <div className="mx-auto flex max-w-6xl flex-col items-center justify-between gap-3 px-4 py-8 sm:flex-row sm:px-6">
-          <Link to="/"><Logo /></Link>
+          <Link to={home}><Logo /></Link>
           <p className="text-sm text-ink-400">© 2026 IntivraBot · Final Year Project</p>
         </div>
       </footer>

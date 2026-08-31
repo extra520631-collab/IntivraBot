@@ -30,10 +30,20 @@ _STRESS = {"sadness", "anger", "disgust", "fear", "contempt"}
 # SFace cosine threshold for "same person" (OpenCV Zoo default).
 _MATCH_THRESHOLD = 0.363
 
+# Minimum detector score before a box counts as a face. YuNet's own 0.7 gate
+# still lets low-confidence artefacts through on a noisy webcam frame, and each
+# one reads as an extra person in the room.
+_DETECT_CONFIDENCE = 0.80
+
 _detector = None
 _recognizer = None
 _emotion_sess = None
 _emotion_io = None
+
+# Local contrast equalisation for the emotion crop: interview rooms are lit
+# far worse than the model's training set, and a flat histogram collapses
+# every expression onto "neutral".
+_CLAHE = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
 
 
 def models_available() -> bool:
@@ -114,13 +124,25 @@ def _embedding(img: np.ndarray, face_row: np.ndarray) -> np.ndarray:
 
 
 def _emotion(img: np.ndarray, face_row: np.ndarray) -> dict:
-    x, y, bw, bh = [int(v) for v in face_row[:4]]
-    x, y = max(0, x), max(0, y)
-    crop = img[y : y + bh, x : x + bw]
-    if crop.size == 0:
-        crop = img
-    gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
-    gray = cv2.resize(gray, (64, 64)).astype(np.float32)
+    """Classify expression on one face.
+
+    FER+ was trained on aligned, tightly cropped faces, so the detector's
+    5-point alignment is used rather than the raw bounding box - an unaligned
+    or loosely cropped face pushes the model towards a flat "neutral".
+    CLAHE evens out the room lighting the model never saw in training.
+    """
+    rec = _recognizer_get()
+    try:
+        aligned = rec.alignCrop(img, face_row)
+    except cv2.error:
+        x, y, bw, bh = [max(0, int(v)) for v in face_row[:4]]
+        aligned = img[y : y + bh, x : x + bw]
+    if aligned is None or aligned.size == 0:
+        aligned = img
+
+    gray = cv2.cvtColor(aligned, cv2.COLOR_BGR2GRAY)
+    gray = _CLAHE.apply(gray)
+    gray = cv2.resize(gray, (64, 64), interpolation=cv2.INTER_AREA).astype(np.float32)
     blob = gray.reshape(1, 1, 64, 64)
 
     sess, (in_name, out_name) = _emotion_get()
@@ -136,7 +158,42 @@ def _emotion(img: np.ndarray, face_row: np.ndarray) -> dict:
         "label": label,
         "confidence": int(np.clip(confidence, 0, 100)),
         "stress": int(np.clip(stress, 0, 100)),
+        # How firmly the model committed. A frame the model is unsure about
+        # should not carry the same weight as a clear read.
+        "certainty": int(np.clip(round(100 * float(probs.max())), 0, 100)),
         "scores": {k: round(v, 4) for k, v in scores.items()},
+    }
+
+
+def _frame_quality(img: np.ndarray, face_row: np.ndarray | None) -> dict:
+    """Why a frame may be unreliable, so the caller can say so instead of
+    silently reporting a bad number as fact."""
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    brightness = float(gray.mean())
+    # Variance of Laplacian: the standard cheap focus/motion-blur measure.
+    sharpness = float(cv2.Laplacian(gray, cv2.CV_64F).var())
+
+    issues = []
+    if brightness < 45:
+        issues.append("too_dark")
+    elif brightness > 215:
+        issues.append("too_bright")
+    if sharpness < 45:
+        issues.append("blurry")
+
+    face_ratio = None
+    if face_row is not None:
+        fw, fh = float(face_row[2]), float(face_row[3])
+        face_ratio = round((fw * fh) / (img.shape[0] * img.shape[1]), 4)
+        if face_ratio < 0.015:
+            issues.append("face_too_small")
+
+    return {
+        "brightness": round(brightness, 1),
+        "sharpness": round(sharpness, 1),
+        "faceRatio": face_ratio,
+        "issues": issues,
+        "usable": not issues,
     }
 
 
@@ -154,19 +211,27 @@ def analyze(frame_b64: str | bytes, baseline_b64: str | bytes | None = None) -> 
         return {"ok": False, "error": "bad_frame"}
 
     faces = _detect(frame)
+    # Ignore specks the detector is unsure about: without this a poster or a
+    # reflection inflates faceCount and raises a false "second person" flag.
+    if len(faces) > 0:
+        faces = faces[faces[:, 14] >= _DETECT_CONFIDENCE]
+
     face_count = int(len(faces))
+    primary = _largest(faces) if face_count else None
+    quality = _frame_quality(frame, primary)
+
     result = {
         "ok": True,
         "faceCount": face_count,
         "faceDetected": face_count > 0,
         "singlePerson": face_count == 1,
+        "quality": quality,
         "emotion": None,
         "match": None,
     }
     if face_count == 0:
         return result
 
-    primary = _largest(faces)
     result["emotion"] = _emotion(frame, primary)
 
     if baseline_b64 is not None:
@@ -182,6 +247,10 @@ def analyze(frame_b64: str | bytes, baseline_b64: str | bytes | None = None) -> 
                     "score": int(np.clip(round(cos * 100), 0, 100)),
                     "cosine": round(cos, 4),
                     "matched": bool(cos >= _MATCH_THRESHOLD),
+                    # A mismatch on a dark or blurred frame is far more likely
+                    # to be the camera than an impostor; callers must not flag
+                    # on it. See _frame_quality.
+                    "reliable": bool(quality["usable"]),
                 }
             else:
                 result["match"] = {"score": None, "cosine": None, "matched": None, "note": "no_face_in_baseline"}

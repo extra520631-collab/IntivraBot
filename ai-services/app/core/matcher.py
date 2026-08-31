@@ -39,12 +39,72 @@ def _canonicalize(skill: str) -> str:
     return _ALIAS_TO_CANONICAL.get(key, skill.strip())
 
 
+def _split_run_on(skill: str) -> list[str] | None:
+    """Split a chip that actually holds several skills.
+
+    Pasting a requirements list into the skills box produces entries like
+    "CSS3 JavaScript" or "Git/GitHub State Management". Left whole they match
+    nothing, so a candidate who genuinely has CSS *and* JavaScript is marked
+    as missing both. Recover the parts when the words are recognisable skills.
+
+    Returns None when the entry is a single skill (including a real multi-word
+    one like "Machine Learning"), so only genuine run-ons are touched.
+    """
+    text = (skill or "").strip()
+    if not text:
+        return None
+
+    # A known skill, however many words it has, is never split.
+    if normalize_skill(text) in _ALIAS_TO_CANONICAL or normalize_skill(text) in _BUNDLE_LOOKUP:
+        return None
+
+    words = re.split(r"[\s/,+&]+", text)
+    if len(words) < 2:
+        return None
+
+    # Walk the words, always preferring the longest phrase that is a real
+    # skill, so "Tailwind CSS Responsive Design" yields "Tailwind CSS" rather
+    # than "Tailwind" + "CSS".
+    found: list[str] = []
+    i = 0
+    matched_any = False
+    while i < len(words):
+        for size in range(min(4, len(words) - i), 0, -1):
+            phrase = " ".join(words[i:i + size])
+            key = normalize_skill(phrase)
+            canonical = _ALIAS_TO_CANONICAL.get(key) or _BUNDLE_LOOKUP.get(key)
+            if canonical:
+                found.append(canonical)
+                matched_any = True
+                i += size
+                break
+        else:
+            i += 1
+
+    if not matched_any:
+        return None
+    unique = list(dict.fromkeys(found))
+
+    # Two or more distinct skills is clearly a run-on. A single skill still
+    # counts when the words it consumed are only part of the entry - e.g.
+    # "Git/GitHub State Management" collapses Git and GitHub onto one name,
+    # yet is plainly not a single skill. Requiring the whole entry to be
+    # consumed would keep those stuck.
+    if len(unique) >= 2:
+        return unique
+    consumed = sum(len(c.split()) for c in found)
+    return unique if consumed < len(words) else None
+
+
 def _expand(skills: list[str]) -> list[str]:
     """Canonicalize a skill list, replacing any bundle with its members.
 
     "MERN Stack" on either side becomes MongoDB + Express + React + Node.js, so
     a CV that names the stack satisfies a job listing the four parts, and a job
     asking for the stack is satisfied by a CV listing them individually.
+
+    Entries holding several run-together skills are split first - see
+    `_split_run_on`.
     """
     out: list[str] = []
     for raw in skills or []:
@@ -53,8 +113,16 @@ def _expand(skills: list[str]) -> list[str]:
         bundle = _BUNDLE_LOOKUP.get(normalize_skill(raw))
         if bundle:
             out.extend(SKILL_BUNDLES[bundle])
-        else:
-            out.append(_canonicalize(raw))
+            continue
+
+        parts = _split_run_on(raw)
+        if parts:
+            for p in parts:
+                # A split part can itself be a bundle ("MERN" inside a run-on).
+                out.extend(SKILL_BUNDLES.get(p, [p]))
+            continue
+
+        out.append(_canonicalize(raw))
     return out
 
 

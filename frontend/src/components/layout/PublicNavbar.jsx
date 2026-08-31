@@ -4,6 +4,8 @@ import { Menu, X, Sparkles, Mail } from 'lucide-react'
 import Logo from '../ui/Logo'
 import Button from '../ui/Button'
 import { cn } from '../../lib/cn'
+import { useAuth } from '../../context/AuthContext'
+import { useHomePath } from '../../lib/useHomePath'
 
 const links = [
   { id: 'features', label: 'Features' },
@@ -15,8 +17,13 @@ const links = [
 
 export default function PublicNavbar() {
   const navigate = useNavigate()
+  const { user } = useAuth()
   const [open, setOpen] = useState(false)
   const [scrolled, setScrolled] = useState(false)
+
+  // A signed-in visitor on a public page belongs in their own portal: the logo
+  // and the primary button both point there instead of offering sign-in again.
+  const home = useHomePath()
 
   // Smooth-scroll to an on-page anchor if it exists; otherwise route home to it.
   const goToHash = (id) => (e) => {
@@ -45,7 +52,7 @@ export default function PublicNavbar() {
       <div className="bg-brand-600 text-white">
         <div className="mx-auto flex max-w-6xl items-center justify-center gap-2 px-4 py-1.5 text-xs font-medium">
           <Sparkles className="h-3.5 w-3.5" />
-          Beta is live — free for candidates &amp; recruiters during launch.
+          Beta is live - free for candidates &amp; recruiters during launch.
         </div>
       </div>
 
@@ -57,7 +64,7 @@ export default function PublicNavbar() {
         )}
       >
         <div className="mx-auto flex h-16 max-w-6xl items-center justify-between gap-4 px-4 sm:px-6">
-          <Link to="/" className="shrink-0">
+          <Link to={home} className="shrink-0">
             <Logo />
           </Link>
 
@@ -93,12 +100,20 @@ export default function PublicNavbar() {
             >
               <Mail className="h-4 w-4" /> Contact
             </button>
-            <Button variant="ghost" size="sm" onClick={() => navigate('/login')}>
-              Sign in
-            </Button>
-            <Button size="sm" onClick={() => navigate('/register')}>
-              Get started
-            </Button>
+            {user ? (
+              <Button size="sm" onClick={() => navigate(home)}>
+                Go to dashboard
+              </Button>
+            ) : (
+              <>
+                <Button variant="ghost" size="sm" onClick={() => navigate('/login')}>
+                  Sign in
+                </Button>
+                <Button size="sm" onClick={() => navigate('/register')}>
+                  Get started
+                </Button>
+              </>
+            )}
           </div>
 
           {/* Mobile toggle */}
@@ -140,8 +155,16 @@ export default function PublicNavbar() {
                 <Mail className="h-4 w-4" /> Contact
               </button>
               <div className="flex gap-2 pt-2">
-                <Button variant="secondary" size="sm" className="flex-1" onClick={() => navigate('/login')}>Sign in</Button>
-                <Button size="sm" className="flex-1" onClick={() => navigate('/register')}>Get started</Button>
+                {user ? (
+                  <Button size="sm" className="flex-1" onClick={() => { setOpen(false); navigate(home) }}>
+                    Go to dashboard
+                  </Button>
+                ) : (
+                  <>
+                    <Button variant="secondary" size="sm" className="flex-1" onClick={() => navigate('/login')}>Sign in</Button>
+                    <Button size="sm" className="flex-1" onClick={() => navigate('/register')}>Get started</Button>
+                  </>
+                )}
               </div>
             </div>
           </div>

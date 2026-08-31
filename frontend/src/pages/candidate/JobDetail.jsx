@@ -29,7 +29,9 @@ export default function JobDetail() {
   const [submitting, setSubmitting] = useState(false)
   const [uploading, setUploading] = useState(false)
   const [uploadedName, setUploadedName] = useState('')
-  const [result, setResult] = useState(null) // { atsScore, matchedSkills, missingSkills, passed }
+  // On success: { applicationId, atsScore, matchedSkills, passed }.
+  // On rejection: { atsScore, matchedCount, requiredCount, passed: false }.
+  const [result, setResult] = useState(null)
   const fileRef = useRef(null)
 
   const onFile = async (e) => {
@@ -78,11 +80,18 @@ export default function JobDetail() {
       )
       reload()
     } catch (err) {
-      // 422 = below apply threshold; details carry the score + missing skills
+      // 422 = below apply threshold. The server sends counts rather than the
+      // missing skill names, so the rejection can be explained without
+      // handing over a checklist to pad a CV with.
       if (err.status === 422 && err.details?.needsResume) {
         toast.error(err.message)
       } else if (err.status === 422 && err.details) {
-        setResult({ atsScore: err.details.atsScore, matchedSkills: [], missingSkills: err.details.missingSkills || [], passed: false })
+        setResult({
+          atsScore: err.details.atsScore,
+          matchedCount: err.details.matchedCount ?? 0,
+          requiredCount: err.details.requiredCount ?? 0,
+          passed: false,
+        })
         toast.error(err.message)
       } else {
         toast.error(err.message || 'Could not apply')
@@ -104,6 +113,17 @@ export default function JobDetail() {
   const deadlineNote = formatDeadline(job.deadline)
   // The server rejects both cases, so the button should never invite the click.
   const closed = Boolean(job.isExpired) || job.status !== 'open'
+  // Skill counts behind the percentage, so the score can be explained rather
+  // than just asserted.
+  // Counts come from the server: below the bar it withholds the skill names,
+  // so they cannot be derived from missingSkills here.
+  const matchedCount = job.matchedCount ?? job.matchedSkills?.length ?? 0
+  const requiredCount = job.requiredCount ?? matchedCount + (job.missingSkills?.length || 0)
+  const missingCount = requiredCount - matchedCount
+  // Scored above the employer's bar. Deliberately not `job.eligible`, which is
+  // also false on a closed job — someone who cleared the bar has earned the
+  // detail either way; only those still below it see the count alone.
+  const clearsBar = job.matchScore != null && job.matchScore >= job.applyThreshold
 
   return (
     <div className="mx-auto max-w-5xl space-y-5">
@@ -287,14 +307,20 @@ export default function JobDetail() {
                       <div className="mt-3 flex items-center gap-1.5 text-sm font-semibold text-red-600">
                         <XCircle className="h-4 w-4" /> Below the apply threshold ({job.applyThreshold}%)
                       </div>
-                      {result.missingSkills?.length > 0 && (
+                      {/* Below the gate, the count explains the decision but
+                          the skill names are withheld: naming them here is a
+                          list to paste into a CV, and a padded CV only fails
+                          the interview that follows. */}
+                      {result.requiredCount > 0 && (
                         <div className="mt-3 w-full rounded-lg bg-red-50 p-3 text-left">
-                          <p className="text-xs font-semibold text-red-700">Missing skills</p>
-                          <div className="mt-1.5 flex flex-wrap gap-1">
-                            {result.missingSkills.map((s) => (
-                              <span key={s} className="rounded bg-white px-2 py-0.5 text-xs text-red-600">{s}</span>
-                            ))}
-                          </div>
+                          <p className="text-xs font-semibold text-red-700">
+                            {result.matchedCount} of {result.requiredCount} required skills found in your CV
+                          </p>
+                          <p className="mt-1.5 text-[11px] leading-relaxed text-red-600">
+                            If your CV understates your experience, describe each project and what you
+                            built, then try again. The AI interview checks depth, so adding skills you
+                            have not used will not get you through.
+                          </p>
                         </div>
                       )}
                       <Button variant="secondary" size="sm" className="mt-4 w-full" onClick={() => setResult(null)}>
@@ -314,6 +340,38 @@ export default function JobDetail() {
                       <div className="mt-4 flex flex-col items-center">
                         <Ring value={job.matchScore} size={104} label="CV match" />
                       </div>
+                      {/* The ring alone does not say where the number came
+                          from. Spell out the skill count that drives it. */}
+                      {requiredCount > 0 && (
+                        <div className="mt-4 w-full rounded-lg border border-ink-200 p-3">
+                          <div className="flex items-baseline justify-between">
+                            <span className="text-xs font-semibold text-ink-700">Skills matched</span>
+                            <span className="text-sm font-bold text-ink-900">
+                              {matchedCount}
+                              <span className="font-medium text-ink-400"> / {requiredCount}</span>
+                            </span>
+                          </div>
+                          <div className="mt-2 flex h-1.5 overflow-hidden rounded-full bg-ink-100">
+                            <div
+                              className="bg-emerald-500 transition-all"
+                              style={{ width: `${(matchedCount / requiredCount) * 100}%` }}
+                            />
+                          </div>
+                          {job.matchedSkills?.length > 0 && (
+                            <div className="mt-2.5 flex flex-wrap gap-1">
+                              {job.matchedSkills.map((s) => (
+                                <span
+                                  key={s}
+                                  className="inline-flex items-center gap-1 rounded bg-emerald-50 px-2 py-0.5 text-xs text-emerald-700"
+                                >
+                                  <CheckCircle2 className="h-3 w-3" />{s}
+                                </span>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      )}
+
                       <div className="mt-3 w-full rounded-lg bg-ink-50 p-3 text-xs text-ink-500">
                         This employer requires{' '}
                         <span className="font-semibold text-ink-900">{job.applyThreshold}%</span>
@@ -324,16 +382,32 @@ export default function JobDetail() {
                             : ` — you're ${job.applyThreshold - job.matchScore}% short.`}
                       </div>
 
-                      {job.missingSkills?.length > 0 && (
+                      {/* Who sees the gap list, and who only sees the count:
+                          past the gate it is preparation for the interview,
+                          below it the same list is a checklist to paste into a
+                          CV. Both still get the count, so the score is always
+                          explained. */}
+                      {missingCount > 0 && (
                         <div className="mt-3 w-full rounded-lg bg-amber-50 p-3 text-left">
                           <p className="text-xs font-semibold text-amber-800">
-                            {job.eligible ? 'Not on your CV' : 'Add these to qualify'}
+                            {clearsBar
+                              ? `Not found in your CV (${missingCount})`
+                              : `${matchedCount} of ${requiredCount} required skills found in your CV`}
                           </p>
-                          <div className="mt-1.5 flex flex-wrap gap-1">
-                            {job.missingSkills.map((s) => (
-                              <span key={s} className="rounded bg-white px-2 py-0.5 text-xs text-amber-700">{s}</span>
-                            ))}
-                          </div>
+
+                          {clearsBar && (
+                            <div className="mt-1.5 flex flex-wrap gap-1">
+                              {job.missingSkills.map((s) => (
+                                <span key={s} className="rounded bg-white px-2 py-0.5 text-xs text-amber-700">{s}</span>
+                              ))}
+                            </div>
+                          )}
+
+                          <p className="mt-2 text-[11px] leading-relaxed text-amber-700">
+                            {clearsBar
+                              ? 'Worth mentioning in the interview if you have real experience with these.'
+                              : 'If your CV understates your experience, describe each project and what you built, then reload. The AI interview checks depth, so adding skills you have not used will not get you through.'}
+                          </p>
                         </div>
                       )}
 
@@ -355,7 +429,7 @@ export default function JobDetail() {
                         <p className="mt-2 text-center text-xs text-ink-400">
                           {closed
                             ? 'This employer is no longer accepting applications.'
-                            : 'Update your CV or profile skills, then reload this page.'}
+                            : 'If your CV understates your experience, upload a fuller version and reload.'}
                         </p>
                       )}
                     </>
@@ -373,7 +447,7 @@ export default function JobDetail() {
                       <input
                         ref={fileRef}
                         type="file"
-                        accept=".pdf,.docx,.txt,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain"
+                        accept=".pdf,application/pdf"
                         className="hidden"
                         onChange={onFile}
                       />
@@ -386,7 +460,7 @@ export default function JobDetail() {
                         {uploading ? (
                           <><Loader2 className="h-4 w-4 animate-spin" /> Uploading…</>
                         ) : (
-                          <><Upload className="h-4 w-4" /> Upload CV (PDF/DOCX)</>
+                          <><Upload className="h-4 w-4" /> Upload CV (PDF)</>
                         )}
                       </Button>
                       {uploadedName && (

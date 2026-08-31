@@ -31,8 +31,12 @@ const faceSampleSchema = new Schema(
     confidence: { type: Number, min: 0, max: 100 }, // composure/positivity
     stress: { type: Number, min: 0, max: 100 },
     label: { type: String }, // dominant emotion
+    certainty: { type: Number, min: 0, max: 100, default: null }, // how firmly the model committed
     matchScore: { type: Number, min: 0, max: 100, default: null }, // vs baseline photo
     matched: { type: Boolean, default: null },
+    // False when the frame was too dark, blurred or distant to judge. Scoring
+    // and flagging both skip these, so a bad webcam never costs a candidate.
+    reliable: { type: Boolean, default: true },
     at: { type: Date, default: Date.now },
   },
   { _id: false }
@@ -47,6 +51,9 @@ const voiceSampleSchema = new Schema(
     multiVoice: { type: Boolean, default: false }, // more than one speaker heard
     voiceCount: { type: Number, default: 1 },
     duration: { type: Number },
+    // As above: a clip that was too quiet, clipped or too short to embed
+    // reliably is recorded but never flagged.
+    reliable: { type: Boolean, default: true },
     at: { type: Date, default: Date.now },
   },
   { _id: false }

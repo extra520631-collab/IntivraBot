@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
-import { Search, AlertTriangle, ArrowUpDown, ArrowUp, ArrowDown, Download, CheckCircle2, UsersRound } from 'lucide-react'
+import { Search, AlertTriangle, ArrowUpDown, ArrowUp, ArrowDown, Download, CheckCircle2, UsersRound, FileText } from 'lucide-react'
 import Badge from '../../components/ui/Badge'
 import Button from '../../components/ui/Button'
 import Spinner from '../../components/ui/Spinner'
@@ -76,6 +76,25 @@ export default function Applications() {
   const [sortDir, setSortDir] = useState('desc')
   const [selected, setSelected] = useState([])
   const [busy, setBusy] = useState(false)
+  // Which candidate's CV is being fetched, so only that row shows a spinner.
+  const [openingCv, setOpeningCv] = useState(null)
+
+  // The CV is streamed through our API (Cloudinary blocks direct PDF delivery)
+  // and the endpoint checks this HR actually received an application from them.
+  const openCv = async (candidate) => {
+    const tab = window.open('', '_blank') // opened up-front, or popup blockers trip
+    setOpeningCv(candidate._id)
+    try {
+      const url = await api.blobUrl(`/uploads/resume/${candidate._id}`)
+      if (tab) tab.location = url
+      setTimeout(() => URL.revokeObjectURL(url), 60_000)
+    } catch (err) {
+      tab?.close()
+      toast.error(err.message || 'Could not open the CV')
+    } finally {
+      setOpeningCv(null)
+    }
+  }
 
   // Selections are row ids from the current job/tab's table — carrying them
   // across a job or tab switch risks a bulk action silently applying to rows
@@ -258,6 +277,23 @@ export default function Applications() {
                                 <option key={s} value={s}>{s}</option>
                               ))}
                             </select>
+                            {/* Reading the CV is the first thing most
+                                recruiters do; without this the only way in
+                                was to open the full report. */}
+                            {a.candidate?.profile?.resumeUrl && (
+                              <Button
+                                variant="soft"
+                                size="sm"
+                                title={`Open ${a.candidate?.name}'s CV`}
+                                onClick={() => openCv(a.candidate)}
+                                disabled={openingCv === a.candidate._id}
+                              >
+                                {openingCv === a.candidate._id
+                                  ? <Spinner size={14} />
+                                  : <FileText className="h-3.5 w-3.5" />}
+                                CV
+                              </Button>
+                            )}
                             <Button as={Link} to={`/hr/report/${a._id}`} variant="soft" size="sm">Report</Button>
                           </div>
                         </td>

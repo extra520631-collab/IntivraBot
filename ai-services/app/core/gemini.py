@@ -29,6 +29,16 @@ _RETRY_STATUSES = {429, 500, 502, 503, 504}
 _RETRY_DELAYS = (0.6, 1.8)  # two retries, then give up and let the caller fall back
 
 
+def _quota_exhausted(body: str) -> bool:
+    """Tell a spent daily quota apart from ordinary rate limiting.
+
+    Google returns 429 for both. The per-minute kind clears almost at once;
+    the daily kind does not, and retrying it just delays the fallback.
+    """
+    text = (body or "").lower()
+    return "quota" in text and ("exceeded" in text or "exhausted" in text)
+
+
 def is_enabled() -> bool:
     return bool(settings.gemini_api_key)
 
@@ -79,6 +89,14 @@ def _call(model: str, body: dict, deadline: float) -> str | None:
             if res.status_code == 200:
                 data = res.json()
                 return data["candidates"][0]["content"]["parts"][0]["text"].strip()
+
+            # A 429 comes in two flavours. Per-minute rate limiting clears in a
+            # second or two and is worth retrying; an exhausted daily quota
+            # will not clear today, so retrying only spends 2.4s of the
+            # candidate's time before falling back anyway.
+            if res.status_code == 429 and _quota_exhausted(res.text):
+                print("Gemini: daily quota exhausted, not retrying")
+                return None
 
             if res.status_code in _RETRY_STATUSES and attempt < len(_RETRY_DELAYS):
                 delay = _RETRY_DELAYS[attempt]

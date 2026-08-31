@@ -120,13 +120,26 @@ def score_answer(question, answer, job_title, job_skills, language="English", fi
             f"Question: {question}\n"
             f"Answer: {answer}\n\n"
             f"Score honestly — a vague or evasive answer must score low even if it is well worded, "
-            f"and an answer that is off-topic for this field scores low regardless of length. "
+            f"and an answer that is off-topic for this field scores low regardless of length.\n\n"
+            # An explicit band table is what keeps two candidates who gave
+            # equally good answers from landing 13 points apart.
+            f"Use this scale, and pick the band the answer actually fits:\n"
+            f"  90-100  Specific, correct, and shows depth: real examples, trade-offs or measurable outcomes.\n"
+            f"  75-89   Solid and relevant with a concrete example, but thin on depth or reasoning.\n"
+            f"  60-74   Correct but general - little evidence they have done this themselves.\n"
+            f"  40-59   Partly relevant, vague, or leaves the question half answered.\n"
+            f"  20-39   Generic filler, or mostly restates the question.\n"
+            f"  0-19    Off-topic, empty, or a list of keywords with no answer in it.\n\n"
+            f"A short answer that is specific and correct beats a long one that says nothing.\n"
             f"Respond in strict JSON with keys: "
             f'score (integer 0-100), feedback (one short sentence), '
             f"strengths (array of up to 2 short phrases), "
             f"improvements (array of up to 2 short phrases)."
         )
-        data = gemini.generate_json(prompt)
+        # Temperature 0 for scoring: the same answer must earn the same mark
+        # every time, or two candidates who said the same thing are ranked by
+        # chance. Creativity belongs in question generation, not marking.
+        data = gemini.generate_json(prompt, temperature=0.0)
         if data and "score" in data:
             return {
                 "score": _clamp(data.get("score")),
@@ -138,30 +151,123 @@ def score_answer(question, answer, job_title, job_skills, language="English", fi
     return _fallback_score(answer, job_skills)
 
 
-def _fallback_score(answer, job_skills):
-    answer = (answer or "").strip()
-    words = len(answer.split())
-    # Length component (rewards substantive answers, caps out ~80 words).
-    length_score = min(1.0, words / 80.0)
-    # Relevance: how many job skills / known skills the answer mentions.
-    mentioned = set(extract_skills(answer))
-    relevant = mentioned.intersection({s for s in job_skills}) if job_skills else mentioned
-    relevance = min(1.0, len(relevant) / max(1, min(len(job_skills or []), 4) or 1))
-    score = round((0.55 * length_score + 0.45 * relevance) * 100)
+# Words that carry no information about competence. A long answer built from
+# these is padding, and scoring it on length alone rewards waffle.
+_FILLER = {
+    "basically", "actually", "really", "very", "just", "quite", "always", "definitely",
+    "passionate", "hardworking", "hard", "worker", "team", "player", "dedicated",
+    "motivated", "enthusiastic", "believe", "think", "feel", "try", "best", "good",
+    "great", "nice", "thing", "things", "stuff", "etc", "many", "various", "several",
+}
 
-    if words < 8:
-        feedback = "Answer is very brief — add specific examples and detail."
+# Signals that an answer describes something the candidate actually did, rather
+# than what they believe about themselves.
+# Ordinary connective words. Real sentences are full of them; a pasted list of
+# technologies has none.
+_FUNCTION_WORDS = {
+    "the", "a", "an", "and", "or", "but", "if", "so", "because", "then", "than",
+    "with", "without", "to", "from", "for", "of", "in", "on", "at", "by", "as",
+    "that", "this", "these", "those", "it", "its", "was", "were", "is", "are",
+    "we", "i", "my", "our", "had", "have", "has", "did", "do", "does", "when",
+    "where", "which", "while", "after", "before", "over", "into", "about",
+}
+
+_SPECIFIC_MARKERS = (
+    "i built", "i wrote", "i designed", "i implemented", "i used", "i created",
+    "i led", "i fixed", "i debugged", "i migrated", "i deployed", "i added",
+    "we built", "we used", "for example", "such as", "resulted in", "reduced",
+    "improved", "increased", "the problem was", "the issue was", "so i", "because",
+)
+
+
+def _fallback_score(answer, job_skills):
+    """Heuristic score used when the AI service is unavailable.
+
+    Deliberately harder to game than a length-plus-keyword count: that version
+    scored a repeated keyword list higher than a thoughtful answer that simply
+    did not name the exact skills, which is backwards. Four signals are blended
+    so no single one can carry a weak answer.
+    """
+    answer = (answer or "").strip()
+    tokens = [t.strip(".,!?;:()\"'").lower() for t in answer.split()]
+    tokens = [t for t in tokens if t]
+    words = len(tokens)
+
+    if words < 5:
+        return {
+            "score": max(0, words * 2),
+            "feedback": "Too short to assess - describe what you did and how.",
+            "strengths": [],
+            "improvements": ["Give a concrete example", "Explain your reasoning"],
+        }
+
+    lower = answer.lower()
+
+    # 1. Substance: length, but saturating early so rambling gains nothing.
+    length_score = min(1.0, words / 60.0)
+
+    # 2. Relevance: skills named, credited generously (2 of the required set
+    #    is already a relevant answer - naming all of them is not the point).
+    mentioned = set(extract_skills(answer))
+    relevant = mentioned.intersection(set(job_skills)) if job_skills else mentioned
+    target = min(len(job_skills or []), 2) or 1
+    relevance = min(1.0, len(relevant) / target)
+
+    # 3. Specificity: did they describe real work? This is what separates a
+    #    genuine short answer from a long generic one.
+    specificity = min(1.0, sum(m in lower for m in _SPECIFIC_MARKERS) / 3.0)
+    # Concrete numbers ("10,000 rows", "200ms", "3 seconds") are strong evidence.
+    if any(t.replace(",", "").replace(".", "").isdigit() for t in tokens):
+        specificity = min(1.0, specificity + 0.25)
+
+    # 4. Density: what share of the answer is meaningful, and how varied is it?
+    #    Repetition drives this down, which is what defeats keyword stuffing.
+    unique_ratio = len(set(tokens)) / words
+    filler_ratio = sum(t in _FILLER for t in tokens) / words
+    density = max(0.0, min(1.0, unique_ratio - filler_ratio))
+
+    score = round(
+        (0.20 * length_score + 0.25 * relevance + 0.35 * specificity + 0.20 * density) * 100
+    )
+
+    # A list of technologies is not an answer to anything. Prose has function
+    # words - "the", "a", "with", "to" - and a keyword dump has almost none, so
+    # their absence is the clearest signal that nothing was actually said.
+    function_words = sum(t in _FUNCTION_WORDS for t in tokens) / words
+    if words >= 8 and function_words < 0.10:
+        score = min(score, 15)
+    # A wall of repeated words is likewise not an answer.
+    if unique_ratio < 0.60:
+        score = min(score, 20)
+    score = _clamp(score)
+
+    if specificity < 0.34:
+        feedback = "Describe something you actually built or solved, and how."
     elif relevance < 0.34:
-        feedback = "Relevant, but tie it more directly to the role's key skills."
+        feedback = "Good detail - tie it more directly to the skills this role needs."
+    elif words < 25:
+        feedback = "On the right track - a little more depth would strengthen it."
     else:
-        feedback = "Clear, relevant answer with good detail."
+        feedback = "Clear, specific answer with relevant detail."
+
+    strengths = []
+    if specificity >= 0.5:
+        strengths.append("Concrete example")
+    if relevance >= 0.5:
+        strengths.append("Relevant to the role")
+    improvements = []
+    if specificity < 0.5:
+        improvements.append("Add a specific example")
+    if relevance < 0.5:
+        improvements.append("Mention the role's key skills")
+    if words < 25:
+        improvements.append("Go into more depth")
+
     return {
         "score": score,
         "feedback": feedback,
-        "strengths": (["Relevant experience"] if relevance >= 0.5 else [])
-        + (["Good detail"] if words >= 40 else []),
-        "improvements": (["Add concrete examples"] if words < 40 else [])
-        + (["Mention key skills"] if relevance < 0.5 else []),
+        "strengths": strengths,
+        "improvements": improvements[:2],
     }
 
 

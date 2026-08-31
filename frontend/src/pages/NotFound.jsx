@@ -2,12 +2,19 @@ import { Link } from 'react-router-dom'
 import { Home, Search, ArrowLeft } from 'lucide-react'
 import Button from '../components/ui/Button'
 import Logo from '../components/ui/Logo'
+import { useAuth } from '../context/AuthContext'
+import { useHomePath } from '../lib/useHomePath'
 
 export default function NotFound() {
+  const { user } = useAuth()
+  const home = useHomePath()
+  // An HR has no candidate job board, so the secondary action follows the role.
+  const browse = user?.role === 'hr' ? '/hr/jobs' : '/candidate/jobs'
+
   return (
     <div className="flex min-h-screen flex-col bg-white">
       <header className="mx-auto flex w-full max-w-6xl items-center px-4 py-5 sm:px-6">
-        <Link to="/"><Logo /></Link>
+        <Link to={home}><Logo /></Link>
       </header>
 
       <main className="flex flex-1 flex-col items-center justify-center px-4 pb-20 text-center">
@@ -20,11 +27,11 @@ export default function NotFound() {
           The page you're looking for doesn't exist or has been moved. Let's get you back on track.
         </p>
         <div className="mt-7 flex flex-col gap-3 sm:flex-row">
-          <Button as={Link} to="/" size="lg">
-            <Home className="h-4 w-4" /> Go home
+          <Button as={Link} to={home} size="lg">
+            <Home className="h-4 w-4" /> {user ? 'Go to dashboard' : 'Go home'}
           </Button>
-          <Button as={Link} to="/candidate/jobs" size="lg" variant="secondary">
-            <Search className="h-4 w-4" /> Browse jobs
+          <Button as={Link} to={browse} size="lg" variant="secondary">
+            <Search className="h-4 w-4" /> {user?.role === 'hr' ? 'Manage jobs' : 'Browse jobs'}
           </Button>
         </div>
         <button

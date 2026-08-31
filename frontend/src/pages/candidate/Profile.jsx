@@ -300,7 +300,7 @@ export default function CandidateProfile() {
               <FileText className="h-5 w-5" />
             </span>
             <div className="mt-3 text-sm font-semibold text-ink-900">Resume / CV</div>
-            <input ref={resumeRef} type="file" accept=".pdf,.docx,.txt" className="hidden" onChange={onResume} />
+            <input ref={resumeRef} type="file" accept=".pdf,application/pdf" className="hidden" onChange={onResume} />
             <div className="mt-2 flex items-center justify-between gap-2">
               {resumeUrl ? (
                 <span className="flex items-center gap-2.5">

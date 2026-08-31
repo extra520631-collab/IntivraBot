@@ -12,10 +12,11 @@ import { teamMemberIds } from '../utils/teamAccess.js'
 // extension. Without one, a raw file comes back as application/octet-stream and
 // the browser downloads a nameless blob instead of opening the CV — so the
 // extension has to be part of the public_id.
+// PDF only. A browser cannot render DOCX, so a Word CV downloads as a file
+// instead of opening — which reads as a broken "View CV" button to the
+// recruiter. Requiring PDF at upload time keeps every CV viewable in place.
 const RESUME_EXT = {
   'application/pdf': 'pdf',
-  'application/vnd.openxmlformats-officedocument.wordprocessingml.document': 'docx',
-  'text/plain': 'txt',
 }
 const RESUME_TYPES = new Set(Object.keys(RESUME_EXT))
 const IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/jpg', 'image/webp'])
@@ -43,7 +44,9 @@ export const uploadPhoto = asyncHandler(async (req, res) => {
 export const uploadResume = asyncHandler(async (req, res) => {
   if (!cloudinaryEnabled) throw new AppError(503, 'File uploads are not configured on the server')
   if (!req.file) throw new AppError(400, 'No file uploaded (field name must be "file")')
-  if (!RESUME_TYPES.has(req.file.mimetype)) throw new AppError(400, 'Resume must be a PDF, DOCX or TXT file')
+  if (!RESUME_TYPES.has(req.file.mimetype)) {
+    throw new AppError(400, 'Your CV must be a PDF. In Word, use File → Save As and pick PDF.')
+  }
 
   const result = await uploadBuffer(req.file.buffer, {
     folder: 'intivrabot/resumes',

@@ -79,6 +79,8 @@ SKILL_ALIASES: dict[str, list[str]] = {
     "Angular": ["angular", "angularjs"],
     "Svelte": ["svelte", "sveltekit"],
     "Redux": ["redux"],
+    "State Management": ["state management", "redux toolkit", "zustand", "mobx", "context api"],
+    "Form Validation": ["form validation", "form handling", "react hook form", "formik"],
     "Tailwind CSS": ["tailwind", "tailwindcss", "tailwind css"],
     "Bootstrap": ["bootstrap"],
     "SASS": ["sass", "scss"],
@@ -128,6 +130,8 @@ SKILL_ALIASES: dict[str, list[str]] = {
     "Prototyping": ["prototyping", "prototype"],
     "Wireframing": ["wireframing", "wireframe"],
     "Design Systems": ["design system", "design systems"],
+    "UI/UX": ["ui/ux", "ui ux", "uiux", "ui design ux", "user interface design"],
+    "Responsive Design": ["responsive design", "responsive web design", "mobile responsive", "responsive layouts"],
     "User Research": ["user research", "ux research"],
     # ── QA ──
     "Selenium": ["selenium"],

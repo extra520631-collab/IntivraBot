@@ -37,7 +37,10 @@ export default function DashboardLayout({ nav = [], title, children }) {
         )}
       >
         <div className="flex h-16 shrink-0 items-center justify-between px-5">
-          <Link to="/">
+          {/* Inside a portal the logo goes to that portal's dashboard, not to
+              the public landing page — signed-in users expect "home" to mean
+              their own home. */}
+          <Link to={base}>
             <Logo />
           </Link>
           <button className="lg:hidden" onClick={() => setOpen(false)}>

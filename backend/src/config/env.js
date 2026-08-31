@@ -25,4 +25,20 @@ export const env = {
   aiServiceUrl: process.env.AI_SERVICE_URL || '',
   geminiApiKey: process.env.GEMINI_API_KEY || '',
   cloudinaryUrl: process.env.CLOUDINARY_URL || '',
+
+  // Outgoing mail (password resets). Optional: with no credentials the app
+  // falls back to returning the reset link in the API response, so the flow
+  // still works locally without an email provider configured.
+  mail: {
+    user: process.env.MAIL_USER || '',
+    pass: process.env.MAIL_PASS || '',
+    from: process.env.MAIL_FROM || process.env.MAIL_USER || '',
+    // Gmail is the default because an App Password is the quickest free setup,
+    // but any SMTP host works by overriding these two.
+    host: process.env.MAIL_HOST || 'smtp.gmail.com',
+    port: Number(process.env.MAIL_PORT) || 465,
+  },
 }
+
+// True once both credentials are present — the only check the mailer needs.
+export const mailEnabled = Boolean(env.mail.user && env.mail.pass)

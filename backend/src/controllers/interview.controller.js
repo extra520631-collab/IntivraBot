@@ -297,21 +297,34 @@ export const voice = asyncHandler(async (req, res) => {
     return res.json({ success: true, ok: false, reason: result?.error || 'unavailable' })
   }
 
-  // The first usable clip becomes the reference voiceprint for the rest.
-  if (!interview.voiceRef?.length && Array.isArray(result.embedding)) {
-    interview.voiceRef = result.embedding
-  }
-  interview.voiceSamples.push({
+  const sample = {
     order: interview.currentIndex + 1,
     matchScore: result.match?.score ?? null,
     matched: result.match?.matched ?? null,
     multiVoice: Boolean(result.multiVoice),
     voiceCount: result.voiceCount ?? 1,
     duration: result.duration,
+    // A clip too quiet, clipped or short to embed reliably is kept for the
+    // record but never counted against the candidate - see voice._audio_quality.
+    reliable: result.quality?.usable !== false,
     at: new Date(),
-  })
-  interview.markModified('voiceSamples')
-  await interview.save()
+  }
+
+  // The reference voiceprint is what every later answer is judged against, so
+  // only a clean clip may define it. Enrolling from a noisy first answer used
+  // to mis-score the whole interview.
+  const enrollNow =
+    !interview.voiceRef?.length && Array.isArray(result.embedding) && result.enrollable !== false
+
+  // Atomic append, for the same reason as the frame handler: these arrive
+  // alongside the candidate's answer and a full save would race it.
+  await Interview.updateOne(
+    { _id: interview._id },
+    {
+      $push: { voiceSamples: sample },
+      ...(enrollNow ? { $set: { voiceRef: result.embedding } } : {}),
+    }
+  )
 
   res.json({
     success: true,
@@ -349,13 +362,22 @@ export const frame = asyncHandler(async (req, res) => {
     confidence: result.emotion?.confidence,
     stress: result.emotion?.stress,
     label: result.emotion?.label,
+    certainty: result.emotion?.certainty ?? null,
     matchScore: result.match?.score ?? null,
     matched: result.match?.matched ?? null,
+    // A frame the camera could not capture properly must not later be read
+    // as evidence about the candidate - see face._frame_quality.
+    reliable: result.quality?.usable !== false,
     at: new Date(),
   }
-  interview.faceSamples.push(sample)
-  interview.markModified('faceSamples')
-  await interview.save()
+  // Append atomically instead of interview.save(). Frames now arrive every few
+  // seconds, so a full-document save would race the answer the candidate is
+  // submitting at the same moment and one of the two would fail a version
+  // check. $push touches only this array and never bumps __v.
+  await Interview.updateOne(
+    { _id: interview._id },
+    { $push: { faceSamples: sample } }
+  )
 
   res.json({
     success: true,
@@ -364,6 +386,7 @@ export const frame = asyncHandler(async (req, res) => {
     singlePerson: result.singlePerson,
     emotion: result.emotion,
     match: result.match,
+    quality: result.quality,
     baselineAvailable: Boolean(baseline),
   })
 })
@@ -384,37 +407,60 @@ export const answer = asyncHandler(async (req, res) => {
   if (!q) throw new AppError(400, 'No active question to answer')
 
   const candidate = await candidateContext(interview.candidate)
-  const scored = await aiService.interviewScore({
-    question: q.text,
-    answer: answerText,
-    jobTitle: job.title,
-    jobSkills: job.skills,
-    language: interview.language,
-    field: interview.field || job.field || '',
-    candidate,
-  })
 
+  // Record the answer before either AI call, so the question generator can see
+  // it in previousQA and ask a genuine follow-up.
   q.answer = answerText
   q.mode = mode || 'text'
   if (reason) q.reason = reason
-  q.score = scored?.score ?? fallbackScore(answerText)
-  q.feedback = scored?.feedback || ''
-  q.strengths = scored?.strengths || []
-  q.improvements = scored?.improvements || []
   q.answeredAt = new Date()
 
   const answeredCount = idx + 1
   const done = answeredCount >= interview.totalQuestions
+
+  // Score this answer and write the next question at the same time. They were
+  // sequential, which made the candidate wait for both round-trips - about
+  // 16 seconds between pressing Next and seeing anything. Neither call needs
+  // the other's result: scoring reads the answer, generation reads the
+  // transcript, so running them together costs the slower one alone.
+  const [scored, next] = await Promise.all([
+    aiService.interviewScore({
+      question: q.text,
+      answer: answerText,
+      jobTitle: job.title,
+      jobSkills: job.skills,
+      language: interview.language,
+      field: interview.field || job.field || '',
+      candidate,
+    }),
+    done ? Promise.resolve(null) : genQuestion(job, interview, answeredCount + 1, candidate),
+  ])
+
+  q.score = scored?.score ?? fallbackScore(answerText)
+  q.feedback = scored?.feedback || ''
+  q.strengths = scored?.strengths || []
+  q.improvements = scored?.improvements || []
+
   let nextQuestion = null
-  if (!done) {
+  if (next) {
     interview.currentIndex = idx + 1
-    const next = await genQuestion(job, interview, answeredCount + 1, candidate)
     interview.questions.push({ order: answeredCount + 1, text: next.text, source: next.source })
     nextQuestion = interview.questions[interview.currentIndex]
   }
 
-  interview.markModified('questions')
-  await interview.save()
+  // Write only the fields this request owns. Scoring an answer takes several
+  // seconds, during which the monitoring loop appends face and voice samples;
+  // a full interview.save() here would write back the stale in-memory copy
+  // loaded before that and silently drop every sample captured meanwhile.
+  await Interview.updateOne(
+    { _id: interview._id },
+    {
+      $set: {
+        questions: interview.questions,
+        currentIndex: interview.currentIndex,
+      },
+    }
+  )
 
   res.json({
     success: true,
@@ -447,19 +493,59 @@ export const finish = asyncHandler(async (req, res) => {
     passThreshold: job.passThreshold,
   })
 
-  const scores = qa.map((q) => q.score).filter((s) => s != null)
-  const overall = summary?.overallScore ?? (scores.length ? Math.round(scores.reduce((a, b) => a + b, 0) / scores.length) : 0)
+  // Every question asked counts, answered or not. Averaging only the scored
+  // ones let someone answer one question well and skip the rest for a high
+  // mark — an unanswered question is a zero, not an absence.
+  const scores = interview.questions
+    .filter((q) => q.text)
+    .map((q) => (q.score != null ? q.score : 0))
+  // Always our own average, never the summary's. The AI summary only sees the
+  // questions that were answered, so taking its number back would restore the
+  // very loophole the zero-fill above closes.
+  const overall = scores.length
+    ? Math.round(scores.reduce((a, b) => a + b, 0) / scores.length)
+    : 0
 
   // Aggregate face + emotion samples (Phase 5).
+  //
+  // Frames now arrive every few seconds rather than once per question, so a
+  // single bad frame is normal: someone walks past, the candidate looks away,
+  // a cloud passes. Counting every one of those as a flag would fail almost
+  // everybody. Two rules keep this fair:
+  //   1. Unreliable frames (too dark / blurred / distant) are excluded, since
+  //      they say more about the webcam than the candidate.
+  //   2. What matters is how *often* something is wrong, not that it ever was.
   const avg = (arr) => (arr.length ? Math.round(arr.reduce((a, b) => a + b, 0) / arr.length) : null)
-  const samples = interview.faceSamples || []
-  const emotionScore = avg(samples.map((s) => s.confidence).filter((v) => v != null))
-  const matchScores = samples.map((s) => s.matchScore).filter((v) => v != null)
-  const faceMatchScore = avg(matchScores)
-  const faceFlags = samples.filter((s) => !s.singlePerson || s.matched === false).length
+  const allSamples = interview.faceSamples || []
+  const samples = allSamples.filter((s) => s.reliable !== false)
 
-  // Voice biometrics aggregate (Phase 6).
-  const vSamples = interview.voiceSamples || []
+  // Weight each emotion reading by how sure the model was about it.
+  const emotionReadings = samples.filter((s) => s.confidence != null)
+  const emotionScore = emotionReadings.length
+    ? Math.round(
+        emotionReadings.reduce((sum, s) => sum + s.confidence * ((s.certainty ?? 100) / 100), 0) /
+          emotionReadings.reduce((sum, s) => sum + (s.certainty ?? 100) / 100, 0)
+      )
+    : null
+
+  const faceMatchScore = avg(samples.map((s) => s.matchScore).filter((v) => v != null))
+
+  // A flag is raised on a sustained problem, not a stray frame.
+  const FLAG_RATIO = 0.25 // a quarter of the interview
+  const ratio = (predicate) => {
+    if (!samples.length) return 0
+    return samples.filter(predicate).length / samples.length
+  }
+  const notAloneRatio = ratio((s) => !s.singlePerson)
+  const mismatchRatio = ratio((s) => s.matched === false)
+
+  let faceFlags = 0
+  if (notAloneRatio >= FLAG_RATIO) faceFlags += 1
+  if (mismatchRatio >= FLAG_RATIO) faceFlags += 1
+
+  // Voice biometrics aggregate (Phase 6). Same reasoning as above.
+  const allVoice = interview.voiceSamples || []
+  const vSamples = allVoice.filter((s) => s.reliable !== false)
   const voiceMatchScore = avg(vSamples.map((s) => s.matchScore).filter((v) => v != null))
   const voiceFlags = vSamples.filter((s) => s.multiVoice || s.matched === false).length
 

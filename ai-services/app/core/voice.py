@@ -15,7 +15,13 @@ _warm = False    # True once the cold-start cost below has been paid
 # Cosine thresholds for Resemblyzer d-vectors.
 _MATCH_THRESHOLD = 0.75  # >= => same speaker
 _DIARIZE_SEP = 0.72      # two cluster centroids below this cosine => likely 2 speakers
-_MIN_SPEECH_SEC = 0.4    # after VAD trimming
+_MIN_SPEECH_SEC = 0.4    # after VAD trimming - below this, refuse outright
+# A d-vector from under ~2s of speech swings widely between clips, so a
+# mismatch there is noise. Below this the score is reported but not trusted.
+_RELIABLE_SPEECH_SEC = 2.0
+# Enrolling the reference voiceprint deserves a stricter bar than comparing
+# against it: every later answer is judged against this one clip.
+_ENROLL_SPEECH_SEC = 3.0
 
 
 def voice_available() -> bool:
@@ -90,6 +96,43 @@ def _cos(a, b) -> float:
     return float(np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b) + 1e-9))
 
 
+def _audio_quality(pcm: np.ndarray, speech: np.ndarray, sr: int) -> dict:
+    """Whether a clip is good enough for the score to mean anything.
+
+    A speaker embedding from a clip that is near-silent, clipped, or mostly
+    background noise is unstable - comparing it produces a number that looks
+    authoritative but is closer to a coin flip. Callers use `usable` to decide
+    whether a mismatch is worth flagging.
+    """
+    issues = []
+    if pcm.size == 0:
+        return {"issues": ["empty"], "usable": False, "rms": 0.0, "speechRatio": 0.0, "clipping": 0.0}
+
+    rms = float(np.sqrt(np.mean(pcm ** 2)))
+    clipping = float(np.mean(np.abs(pcm) > 0.98))
+    speech_ratio = float(speech.size / max(pcm.size, 1))
+    speech_sec = speech.size / 16000
+
+    if rms < 0.01:
+        issues.append("too_quiet")
+    if clipping > 0.01:
+        issues.append("clipping")
+    if speech_ratio < 0.25:
+        issues.append("mostly_silence")
+    # Resemblyzer's own guidance: shorter clips give unreliable d-vectors.
+    if speech_sec < _RELIABLE_SPEECH_SEC:
+        issues.append("too_short_for_match")
+
+    return {
+        "rms": round(rms, 4),
+        "clipping": round(clipping, 4),
+        "speechRatio": round(speech_ratio, 3),
+        "speechSeconds": round(speech_sec, 2),
+        "issues": issues,
+        "usable": not issues,
+    }
+
+
 def analyze(audio_b64: str, sample_rate: int = 16000, reference=None) -> dict:
     global _warm
     if not voice_available():
@@ -104,6 +147,8 @@ def analyze(audio_b64: str, sample_rate: int = 16000, reference=None) -> dict:
         wav = preprocess_wav(pcm, source_sr=sr)
         if wav.size < int(16000 * _MIN_SPEECH_SEC):
             return {"ok": False, "error": "too_short", "duration": duration}
+
+        quality = _audio_quality(pcm, wav, sr)
 
         enc = _encoder_get()
         embed, partials, _ = enc.embed_utterance(wav, return_partials=True, rate=1.3)
@@ -128,6 +173,10 @@ def analyze(audio_b64: str, sample_rate: int = 16000, reference=None) -> dict:
             "multiVoice": multi,
             "voiceCount": voice_count,
             "duration": duration,
+            "quality": quality,
+            # Only a clean clip should be trusted to define who the speaker is
+            # for the rest of the interview.
+            "enrollable": bool(quality["usable"] and quality["speechSeconds"] >= _ENROLL_SPEECH_SEC),
             "match": None,
         }
         if reference is not None and len(reference) == len(embed):
@@ -138,6 +187,9 @@ def analyze(audio_b64: str, sample_rate: int = 16000, reference=None) -> dict:
                 "score": int(np.clip(round(cos * 100), 0, 100)),
                 "cosine": round(cos, 4),
                 "matched": bool(cos >= _MATCH_THRESHOLD),
+                # A mismatch on a noisy or clipped clip says more about the
+                # microphone than the speaker.
+                "reliable": bool(quality["usable"]),
             }
         # Only now is every first-call cost on this path actually paid, so this
         # is the one place "warm" can be claimed honestly.

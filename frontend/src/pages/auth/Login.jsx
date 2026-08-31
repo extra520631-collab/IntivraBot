@@ -12,7 +12,7 @@ import { validateLogin } from '../../lib/validators'
 import { cn } from '../../lib/cn'
 
 export default function Login() {
-  const { login } = useAuth()
+  const { login, logout } = useAuth()
   const toast = useToast()
   const navigate = useNavigate()
   const [role, setRole] = useState('candidate')
@@ -34,8 +34,21 @@ export default function Login() {
     setLoading(true)
     try {
       const user = await login({ email: form.email, password: form.password })
+
+      // The toggle is a real choice, not decoration: signing in as Candidate
+      // with an HR account (or the reverse) is almost always the wrong tab
+      // rather than the wrong password. `login` has already stored the token,
+      // so drop it again before reporting the mismatch.
+      if (user.role !== role) {
+        logout()
+        const actual = user.role === 'hr' ? 'HR Manager' : 'Candidate'
+        setErrors({ password: `This is a ${actual} account — switch to the ${actual} tab to sign in.` })
+        toast.error(`Selected ${role === 'hr' ? 'HR Manager' : 'Candidate'}, but this is a ${actual} account.`)
+        setLoading(false)
+        return
+      }
+
       toast.success('Welcome back!')
-      // Navigate by the account's real role (not the toggle).
       navigate(user.role === 'hr' ? '/hr' : '/candidate')
     } catch (err) {
       toast.error(err.message || 'Sign in failed')
@@ -57,7 +70,7 @@ export default function Login() {
           <button
             key={val}
             type="button"
-            onClick={() => setRole(val)}
+            onClick={() => { setRole(val); setErrors((p) => ({ ...p, password: undefined })) }}
             className={cn(
               'rounded-md py-2 text-sm font-semibold transition',
               role === val ? 'bg-white text-brand-700 shadow-sm' : 'text-ink-500'

@@ -46,10 +46,14 @@ export const apply = asyncHandler(async (req, res) => {
     matchedSkills = result.matchedSkills || []
     // Enforce the job's minimum match to apply.
     if (atsScore < job.applyThreshold) {
+      // Counts, not names. Naming the missing skills to someone below the bar
+      // hands them a list to paste into a CV, and hiding it in the UI alone
+      // would still leave it readable in the network response.
       throw new AppError(422, `Your CV matches ${atsScore}% — this job requires at least ${job.applyThreshold}%.`, {
         atsScore,
         applyThreshold: job.applyThreshold,
-        missingSkills: result.missingSkills || [],
+        matchedCount: result.matchedSkills?.length || 0,
+        requiredCount: (result.matchedSkills?.length || 0) + (result.missingSkills?.length || 0),
       })
     }
   }
