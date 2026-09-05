@@ -110,6 +110,9 @@ export const aiService = {
     post('/api/interview/detect-field', { jobTitle, jobSkills }),
   // Returns { score, feedback, strengths, improvements } or null.
   interviewScore: (payload) => post('/api/interview/score', payload),
+  // What the candidate just said: { intent, reply, answer } or null. Lets the
+  // interview run as a conversation instead of a fixed question form.
+  interviewConverse: (payload) => post('/api/interview/converse', payload),
   // Returns { overallScore, verdict, strengths, improvements } or null.
   interviewSummary: (payload) => post('/api/interview/summary', payload),
 

@@ -48,7 +48,7 @@ export default function Practice() {
   }
 
   return (
-    <div className="mx-auto max-w-4xl space-y-6">
+    <div className="mx-auto max-w-6xl space-y-6">
       {/* Result of the run that just finished */}
       {result && (
         <Card>

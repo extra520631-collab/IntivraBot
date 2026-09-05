@@ -58,6 +58,8 @@ const jobFields = z.object({
     passThreshold: z.number().int().min(0).max(100).optional(),
     customQuestions: z.array(z.string().trim().min(5, 'A question needs at least 5 characters').max(300)).max(10).optional(),
     questionCount: z.number().int().min(3).max(15).optional(),
+    allowTextAnswers: z.boolean().optional(),
+    requireScreenShare: z.boolean().optional(),
     field: z.string().trim().max(40).optional(),
     status: z.enum(['open', 'closed', 'draft']).optional(),
 })

@@ -1,5 +1,6 @@
 import Application from '../models/Application.js'
 import Job from '../models/Job.js'
+import Interview from '../models/Interview.js'
 import { asyncHandler } from '../utils/asyncHandler.js'
 import { teamMemberIds } from '../utils/teamAccess.js'
 
@@ -99,10 +100,42 @@ export const hrAnalytics = asyncHandler(async (req, res) => {
     status: a.status,
   }))
 
+  // Per-job comparison. Which roles pull strong candidates and which are
+  // struggling is the question a hiring manager actually asks, and the
+  // all-jobs averages above cannot answer it.
+  const byJob = jobs
+    .map((j) => {
+      const jobApps = apps.filter((a) => String(a.job?._id || a.job) === String(j._id))
+      const scored = jobApps.filter((a) => a.interviewScore != null)
+      return {
+        job: j.title.length > 18 ? `${j.title.slice(0, 18)}…` : j.title,
+        applicants: jobApps.length,
+        avgScore: scored.length
+          ? round(scored.reduce((s, a) => s + a.interviewScore, 0) / scored.length)
+          : 0,
+      }
+    })
+    .filter((j) => j.applicants > 0)
+    .sort((a, b) => b.applicants - a.applicants)
+    .slice(0, 6)
+
+  // Does a strong CV actually predict a strong interview? Each dot is one
+  // candidate who has both scores — the shape tells an employer whether their
+  // apply threshold is doing any useful work.
+  const atsVsInterview = apps
+    .filter((a) => a.atsScore != null && a.interviewScore != null)
+    .map((a) => ({
+      ats: a.atsScore,
+      interview: a.interviewScore,
+      name: a.candidate?.name || 'Candidate',
+    }))
+
   res.json({
     success: true,
     stats: { total, eligible, interviewed, passed, avgMatchScore, avgInterviewScore, passRate, activeJobs: jobs.filter((j) => j.status === 'open').length },
     funnel,
+    byJob,
+    atsVsInterview,
     scoreDistribution,
     outcome,
     topSkills,
@@ -143,10 +176,97 @@ export const candidateAnalytics = asyncHandler(async (req, res) => {
   const doneCount = Object.values(checks).filter(Boolean).length
   const profileCompletion = round((doneCount / 4) * 100)
 
+  // ── Chart data, all derived from this candidate's real applications ───────
+
+  // How their interview scores have moved over time. Oldest first, so the line
+  // reads left-to-right as progress.
+  const scored = apps
+    .filter((a) => a.interviewScore != null)
+    .slice()
+    .reverse()
+  const scoreTrend = scored.map((a, i) => ({
+    n: `#${i + 1}`,
+    role: a.job?.title || 'Role',
+    interview: a.interviewScore,
+    ats: a.atsScore ?? null,
+  }))
+
+  // Where their applications currently stand. Empty stages are dropped only
+  // when there is something to show; with no applications at all the full set
+  // is returned at zero, so the chart still renders with its legend intact
+  // rather than vanishing off the dashboard.
+  const STATUS_ORDER = ['applied', 'screened', 'shortlisted', 'interviewed', 'passed', 'rejected']
+  const allStatuses = STATUS_ORDER.map((s) => ({
+    name: s,
+    value: apps.filter((a) => a.status === s).length,
+  }))
+  const statusCounts = applications > 0
+    ? allStatuses.filter((x) => x.value > 0)
+    : allStatuses
+
+  // Their average interview score against the average of everyone who took the
+  // same jobs — the one number a candidate actually wants: am I competitive?
+  const avgInterview = scored.length
+    ? round(scored.reduce((sum, a) => sum + a.interviewScore, 0) / scored.length)
+    : null
+  const avgAts = apps.filter((a) => a.atsScore != null).length
+    ? round(
+        apps.filter((a) => a.atsScore != null).reduce((s, a) => s + a.atsScore, 0) /
+          apps.filter((a) => a.atsScore != null).length
+      )
+    : null
+
+  // Best and worst scoring answers across their interviews, so they can see
+  // which kinds of question they handle well.
+  const interviews = await Interview.find({
+    candidate: req.user._id,
+    status: 'completed',
+    isPractice: { $ne: true },
+  })
+    .select('overallScore emotionScore faceMatchScore voiceMatchScore completedAt createdAt job')
+    .populate('job', 'title')
+    .sort({ completedAt: 1 })
+    .lean()
+
+  // The four things every interview measures, averaged. Gives the candidate a
+  // shape to their performance rather than one flat number.
+  const avgOf = (key) => {
+    const vals = interviews.map((i) => i[key]).filter((v) => v != null)
+    return vals.length ? round(vals.reduce((a, b) => a + b, 0) / vals.length) : 0
+  }
+  // Always the same five axes, even with nothing behind them: the chart is
+  // part of the dashboard's shape, and a candidate seeing the empty version
+  // learns what they will be measured on.
+  const skillRadar = [
+    { metric: 'Answers', value: avgOf('overallScore') },
+    { metric: 'Confidence', value: avgOf('emotionScore') },
+    { metric: 'Face match', value: avgOf('faceMatchScore') },
+    { metric: 'Voice match', value: avgOf('voiceMatchScore') },
+    { metric: 'Resume fit', value: avgAts ?? 0 },
+  ]
+
+  // Job-hunting effort over the last six months: how many roles they applied
+  // to each month, and how many of those reached an interview. Seeing the two
+  // lines diverge is the clearest signal that applications are being sent but
+  // not landing — something none of the other charts here shows.
+  const appsByMonth = bucketByMonth(apps)
+  const interviewsByMonth = bucketByMonth(
+    interviews.map((iv) => ({ createdAt: iv.completedAt || iv.createdAt }))
+  )
+  const activityTrend = appsByMonth.map((row, i) => ({
+    m: row.m,
+    applied: row.v,
+    interviewed: interviewsByMonth[i]?.v ?? 0,
+  }))
+
   res.json({
     success: true,
-    stats: { applications, interviewsDone, shortlisted, passed },
+    stats: { applications, interviewsDone, shortlisted, passed, avgInterview, avgAts },
     recent,
     profile: { completion: profileCompletion, checks },
+    scoreTrend,
+    statusCounts,
+    skillRadar,
+    activityTrend,
   })
 })

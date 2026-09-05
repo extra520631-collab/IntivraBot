@@ -22,6 +22,10 @@ export default {
           700: '#334155',
           500: '#64748b',
           400: '#94a3b8',
+          // The border step. 200 was the lightest thing the palette had, and
+          // card edges drawn in it disappeared against white — this sits
+          // between 400 and 200 so an outline actually reads as one.
+          300: '#cbd5e1',
           200: '#e2e8f0',
           100: '#f1f5f9',
           50: '#f8fafc',

@@ -1,5 +1,5 @@
 import { Link } from 'react-router-dom'
-import { Clock, FileText, Loader2, CalendarClock } from 'lucide-react'
+import { Clock, FileText, Loader2, Activity, Info } from 'lucide-react'
 import { Card, CardHeader, CardBody } from '../../components/ui/Card'
 import Badge from '../../components/ui/Badge'
 import Spinner from '../../components/ui/Spinner'
@@ -27,19 +27,33 @@ export default function Schedule() {
   const maxCount = Math.max(1, ...week.map((w) => w.count))
 
   return (
-    <div className="mx-auto max-w-5xl space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h2 className="text-xl font-bold text-ink-900">Interview Schedule</h2>
-          <p className="text-sm text-ink-500">Live interview activity across your jobs</p>
-        </div>
+    <div className="mx-auto max-w-6xl space-y-6">
+      <div>
+        <h2 className="text-xl font-bold text-ink-900">Interview Activity</h2>
+        <p className="text-sm text-ink-500">
+          Interviews across your jobs — live, and recently finished
+        </p>
       </div>
+
+      {/* HR arrives here expecting to book slots. Nothing is booked: a
+          candidate starts their interview whenever they choose and the AI runs
+          it unattended, so say that once rather than leaving them hunting for
+          a button that does not exist. */}
+      <p className="flex items-start gap-2 rounded-lg border border-ink-200 bg-ink-50/60 px-3.5 py-2.5 text-xs leading-relaxed text-ink-600">
+        <Info className="mt-0.5 h-3.5 w-3.5 shrink-0 text-ink-400" />
+        <span>
+          There is nothing to schedule. Candidates take their AI interview
+          whenever they like, and you don&apos;t need to attend — results land
+          in <Link to="/hr/applications" className="font-semibold text-brand-600 hover:underline">Applications</Link>.
+          What each interview asks and requires is set on the job itself.
+        </span>
+      </p>
 
       <div className="grid gap-6 lg:grid-cols-3">
         {/* Week strip */}
         <div className="lg:col-span-2">
           <Card>
-            <CardHeader title="This week" subtitle="Interviews taken per day" />
+            <CardHeader title="This week" subtitle="Interviews candidates took each day" />
             <CardBody>
               <div className="grid grid-cols-7 gap-2">
                 {week.map((w) => (
@@ -100,7 +114,7 @@ export default function Schedule() {
         <CardHeader title="Recently completed" />
         <CardBody className="space-y-3">
           {nothing ? (
-            <EmptyState icon={CalendarClock} title="No interviews yet" description="When candidates take AI interviews for your jobs, they show up here." />
+            <EmptyState icon={Activity} title="No interviews yet" description="When candidates take AI interviews for your jobs, they show up here." />
           ) : recent.length === 0 ? (
             <p className="text-sm text-ink-500">No completed interviews yet.</p>
           ) : (

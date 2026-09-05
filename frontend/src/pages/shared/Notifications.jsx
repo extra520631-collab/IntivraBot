@@ -28,7 +28,7 @@ export default function Notifications() {
   const { notifications, unread, markAllRead, markRead } = useNotifications()
 
   return (
-    <div className="mx-auto max-w-3xl space-y-5">
+    <div className="mx-auto max-w-6xl space-y-5">
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-xl font-bold text-ink-900">Notifications</h2>

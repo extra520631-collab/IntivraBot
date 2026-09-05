@@ -1,7 +1,7 @@
 import { Routes, Route, useLocation } from 'react-router-dom'
 import {
   LayoutDashboard, Briefcase, FileText, User, BarChart3, Users, PlusSquare,
-  ClipboardList, Dumbbell, Bell, Settings as SettingsIcon, CalendarClock, FolderKanban,
+  ClipboardList, Dumbbell, Bell, Settings as SettingsIcon, Activity, FolderKanban,
 } from 'lucide-react'
 import DashboardLayout from './components/layout/DashboardLayout'
 import RequireAuth from './components/RequireAuth'
@@ -58,7 +58,9 @@ const hrNav = [
   { to: '/hr/jobs', label: 'Manage Jobs', icon: FolderKanban },
   { to: '/hr/post-job', label: 'Post Job', icon: PlusSquare },
   { to: '/hr/applications', label: 'Applications', icon: Users },
-  { to: '/hr/schedule', label: 'Schedule', icon: CalendarClock },
+  // Interviews run whenever the candidate starts one — nothing here is
+  // scheduled, so the nav says what the page actually shows.
+  { to: '/hr/schedule', label: 'Interview Activity', icon: Activity },
   { to: '/hr/analytics', label: 'Analytics', icon: BarChart3 },
   { to: '/hr/team', label: 'Team', icon: User },
   { to: '/hr/notifications', label: 'Notifications', icon: Bell },
@@ -78,7 +80,7 @@ const titleMap = {
   '/hr/jobs': 'Manage Jobs',
   '/hr/post-job': 'Post a Job',
   '/hr/applications': 'Applications',
-  '/hr/schedule': 'Interview Schedule',
+  '/hr/schedule': 'Interview Activity',
   '/hr/analytics': 'Analytics',
   '/hr/team': 'Team',
   '/hr/notifications': 'Notifications',

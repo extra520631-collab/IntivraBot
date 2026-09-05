@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import { Menu, X, Sparkles, Mail } from 'lucide-react'
+import { Menu, X, Sparkles } from 'lucide-react'
 import Logo from '../ui/Logo'
 import Button from '../ui/Button'
 import { cn } from '../../lib/cn'
@@ -39,6 +39,18 @@ export default function PublicNavbar() {
     }
   }
 
+  // The logo. Routing to "/" alone does nothing when the visitor is already on
+  // the landing page part-way down it, so scroll back to the hero as well and
+  // clear any #anchor left in the URL — otherwise the next reload jumps them
+  // straight back to the section they just left.
+  const goHome = (e) => {
+    setOpen(false)
+    if (window.location.pathname !== '/') return // let the Link route normally
+    e.preventDefault()
+    if (window.location.hash) history.replaceState(null, '', '/')
+    window.scrollTo({ top: 0, behavior: 'smooth' })
+  }
+
   useEffect(() => {
     const onScroll = () => setScrolled(window.scrollY > 8)
     onScroll()
@@ -64,18 +76,23 @@ export default function PublicNavbar() {
         )}
       >
         <div className="mx-auto flex h-16 max-w-6xl items-center justify-between gap-4 px-4 sm:px-6">
-          <Link to={home} className="shrink-0">
+          {/* Always the landing page. This navbar only ever renders on public
+              pages, so a logo click here means "take me to the top of the
+              marketing site" — sending a signed-in visitor into their portal
+              instead makes the public site impossible to browse. The portal is
+              still one click away via the button on the right. */}
+          <Link to="/" onClick={goHome} className="shrink-0">
             <Logo />
           </Link>
 
           {/* Center pill nav */}
-          <nav className="hidden items-center gap-1 rounded-full border border-ink-100 bg-ink-50/70 p-1 md:flex">
+          <nav className="hidden items-center gap-1 rounded-full border border-ink-300 bg-ink-50 p-1 shadow-sm transition-colors hover:border-brand-400 md:flex">
             {links.map((l) =>
               l.to ? (
                 <Link
                   key={l.label}
                   to={l.to}
-                  className="rounded-full px-3.5 py-1.5 text-sm font-medium text-ink-600 transition hover:bg-white hover:text-ink-900 hover:shadow-sm"
+                  className="rounded-full px-3.5 py-1.5 text-sm font-medium text-ink-700 transition hover:bg-white hover:text-brand-600 hover:shadow-sm"
                 >
                   {l.label}
                 </Link>
@@ -84,7 +101,7 @@ export default function PublicNavbar() {
                   key={l.label}
                   type="button"
                   onClick={goToHash(l.id)}
-                  className="rounded-full px-3.5 py-1.5 text-sm font-medium text-ink-600 transition hover:bg-white hover:text-ink-900 hover:shadow-sm"
+                  className="rounded-full px-3.5 py-1.5 text-sm font-medium text-ink-700 transition hover:bg-white hover:text-brand-600 hover:shadow-sm"
                 >
                   {l.label}
                 </button>
@@ -93,13 +110,6 @@ export default function PublicNavbar() {
           </nav>
 
           <div className="hidden items-center gap-2 md:flex">
-            <button
-              type="button"
-              onClick={goToHash('contact')}
-              className="inline-flex h-9 items-center gap-1.5 rounded-lg border border-ink-200 px-3.5 text-sm font-semibold text-ink-700 transition hover:bg-ink-50"
-            >
-              <Mail className="h-4 w-4" /> Contact
-            </button>
             {user ? (
               <Button size="sm" onClick={() => navigate(home)}>
                 Go to dashboard
@@ -147,13 +157,6 @@ export default function PublicNavbar() {
                   </button>
                 )
               )}
-              <button
-                type="button"
-                onClick={goToHash('contact')}
-                className="flex w-full items-center gap-1.5 rounded-lg px-3 py-2 text-left text-sm font-medium text-ink-600 hover:bg-ink-50"
-              >
-                <Mail className="h-4 w-4" /> Contact
-              </button>
               <div className="flex gap-2 pt-2">
                 {user ? (
                   <Button size="sm" className="flex-1" onClick={() => { setOpen(false); navigate(home) }}>

@@ -48,7 +48,7 @@ export default function Landing() {
         <div className="animate-float pointer-events-none absolute -left-10 top-24 -z-10 h-40 w-40 rounded-full bg-brand-100/60 blur-2xl" />
         <div className="animate-float pointer-events-none absolute right-0 top-10 -z-10 h-52 w-52 rounded-full bg-brand-200/40 blur-3xl" style={{ animationDelay: '1.5s' }} />
 
-        <div className="mx-auto max-w-6xl px-4 pb-12 pt-8 sm:px-6">
+        <div className="mx-auto max-w-7xl px-5 pb-12 pt-8 sm:px-6">
           <div className="mx-auto max-w-3xl text-center">
             <span className="animate-fade-up inline-flex items-center gap-2 rounded-full border border-brand-200 bg-brand-50 px-3 py-1 text-xs font-semibold text-brand-700">
               <ShieldCheck className="h-3.5 w-3.5" /> AI-powered · Unbiased · Secure
@@ -92,7 +92,7 @@ export default function Landing() {
       </section>
 
       {/* Features */}
-      <section id="features" className="mx-auto max-w-6xl px-4 py-12 sm:px-6">
+      <section id="features" className="mx-auto max-w-7xl px-5 py-12 sm:px-6">
         <Reveal className="mb-8 text-center">
           <h2 className="text-3xl font-bold text-ink-900">One platform, the whole pipeline</h2>
           <p className="mt-2 text-ink-500">Other tools cover a single stage - IntivraBot covers the entire journey.</p>
@@ -111,8 +111,8 @@ export default function Landing() {
       </section>
 
       {/* How it works */}
-      <section id="how" className="border-y border-ink-100 bg-ink-50/50">
-        <div className="mx-auto max-w-6xl px-4 py-12 sm:px-6">
+      <section id="how" className="border-y border-ink-200 bg-ink-50/60">
+        <div className="mx-auto max-w-7xl px-5 py-12 sm:px-6">
           <Reveal className="mb-8 text-center">
             <h2 className="text-3xl font-bold text-ink-900">How it works</h2>
           </Reveal>
@@ -129,7 +129,7 @@ export default function Landing() {
       </section>
 
       {/* Roles */}
-      <section id="roles" className="mx-auto max-w-6xl px-4 py-12 sm:px-6">
+      <section id="roles" className="mx-auto max-w-7xl px-5 py-12 sm:px-6">
         <div className="grid gap-4 md:grid-cols-2">
           <Reveal as="div" className="card-base p-8">
             <h3 className="text-xl font-bold text-ink-900">For Candidates</h3>
@@ -157,7 +157,7 @@ export default function Landing() {
       </section>
 
       {/* FAQ */}
-      <section id="faq" className="border-t border-ink-100 bg-ink-50/50">
+      <section id="faq" className="border-t border-ink-200 bg-ink-50/60">
         <div className="mx-auto max-w-3xl px-4 py-12 sm:px-6">
           <Reveal className="mb-6 text-center">
             <h2 className="text-3xl font-bold text-ink-900">Frequently asked</h2>
@@ -181,7 +181,7 @@ export default function Landing() {
 
       {/* CTA band */}
       <section className="bg-brand-600">
-        <div className="mx-auto flex max-w-6xl flex-col items-center justify-between gap-4 px-4 py-10 text-center sm:flex-row sm:px-6 sm:text-left">
+        <div className="mx-auto flex max-w-7xl flex-col items-center justify-between gap-4 px-4 py-10 text-center sm:flex-row sm:px-6 sm:text-left">
           <div className="text-white">
             <h3 className="text-2xl font-bold">Ready to hire smarter?</h3>
             <p className="mt-1 text-brand-100">Create your free account today.</p>
@@ -193,30 +193,84 @@ export default function Landing() {
       </section>
 
       {/* Footer */}
-      <footer className="border-t border-ink-100 bg-white">
-        <div className="mx-auto max-w-6xl px-4 py-10 sm:px-6">
-          <div className="grid gap-8 md:grid-cols-5">
+      {/* A tinted ground, not white — the previous white-on-white footer had
+          nothing to separate it from the section above and read as empty page. */}
+      <footer className="relative overflow-hidden border-t-2 border-brand-500 bg-ink-50">
+
+        <div className="relative mx-auto max-w-7xl px-5 pb-6 pt-9 sm:px-6">
+          <div className="grid gap-8 md:grid-cols-5 md:gap-6">
+            {/* Brand column */}
             <div className="md:col-span-2">
-              <Logo />
-              <p className="mt-3 max-w-xs text-sm text-ink-500">
-                AI-powered recruitment platform - resume screening, intelligent interviews,
+              {/* Clickable too — someone who has read to the bottom is the
+                  most likely person to want the top again. */}
+              <button
+                type="button"
+                onClick={() => window.scrollTo({ top: 0, behavior: 'smooth' })}
+                aria-label="Back to top"
+                className="rounded-lg transition hover:opacity-80"
+              >
+                <Logo />
+              </button>
+              <p className="mt-3 max-w-[19rem] text-sm leading-relaxed text-ink-500">
+                AI-powered recruitment — resume screening, intelligent interviews,
                 and identity verification in one place.
               </p>
+
+              {/* Contact sits inline rather than stacked: two short lines took
+                  three rows of height for no gain. */}
+              <div className="mt-4 flex flex-wrap items-center gap-x-5 gap-y-2">
+                {footerContact.map(({ icon: Icon, value, href }) => (
+                  <a
+                    key={value}
+                    href={href}
+                    className="group inline-flex items-center gap-2 text-sm font-medium text-ink-700 transition hover:text-brand-600"
+                  >
+                    <Icon className="h-4 w-4 text-brand-600" />
+                    <span className="border-b border-transparent transition group-hover:border-brand-600">
+                      {value}
+                    </span>
+                  </a>
+                ))}
+              </div>
+
+              {/* The AI services being live is the one status worth stating —
+                  more use than a row of social icons for accounts that don't
+                  exist yet. */}
+              <div className="mt-4 inline-flex items-center gap-2 rounded-full border border-emerald-300 bg-emerald-50 px-3 py-1">
+                <span className="relative flex h-2 w-2">
+                  <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75" />
+                  <span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-500" />
+                </span>
+                <span className="text-xs font-semibold text-emerald-700">All systems operational</span>
+              </div>
             </div>
-            {[
-              ['Product', [['Features', '#features'], ['How it works', '#how'], ['For candidates', '#roles'], ['For recruiters', '#roles']]],
-              ['Company', [['About', '#'], ['Careers', '#'], ['Contact', '#contact'], ['Blog', '/blog']]],
-              ['Legal', [['Privacy', '#'], ['Terms', '#'], ['Security', '#'], ['Consent', '#']]],
-            ].map(([title, items]) => (
+
+            {/* Link columns */}
+            {footerLinks.map(({ title, items }) => (
               <div key={title}>
-                <h4 className="text-sm font-semibold text-ink-900">{title}</h4>
-                <ul className="mt-3 space-y-2">
+                <h4 className="text-[11px] font-bold uppercase tracking-wider text-ink-900">
+                  {title}
+                </h4>
+                {/* A short brand rule under each heading ties the columns to
+                    the page's accent without adding another colour. */}
+                <span className="mt-1.5 block h-0.5 w-5 rounded-full bg-brand-500" />
+                <ul className="mt-3 space-y-1.5">
                   {items.map(([label, href]) => (
                     <li key={label}>
                       {href.startsWith('/') ? (
-                        <Link to={href} className="text-sm text-ink-500 hover:text-brand-600">{label}</Link>
+                        <Link
+                          to={href}
+                          className="text-sm font-medium text-ink-600 transition hover:text-brand-600"
+                        >
+                          {label}
+                        </Link>
                       ) : (
-                        <a href={href} className="text-sm text-ink-500 hover:text-brand-600">{label}</a>
+                        <a
+                          href={href}
+                          className="text-sm font-medium text-ink-600 transition hover:text-brand-600"
+                        >
+                          {label}
+                        </a>
                       )}
                     </li>
                   ))}
@@ -224,9 +278,24 @@ export default function Landing() {
               </div>
             ))}
           </div>
-          <div className="mt-8 flex flex-col items-center justify-between gap-3 border-t border-ink-100 pt-6 sm:flex-row">
-            <p className="text-sm text-ink-400">© 2026 IntivraBot · Final Year Project</p>
-            <p className="text-sm text-ink-400">Made with care in Pakistan 🇵🇰</p>
+
+          {/* Bottom bar */}
+          <div className="mt-7 flex flex-col items-center justify-between gap-3 border-t border-ink-200 pt-4 sm:flex-row">
+            <p className="text-xs text-ink-500">
+              © {new Date().getFullYear()} IntivraBot · Final Year Project
+            </p>
+            <div className="flex flex-wrap items-center justify-center gap-2">
+              {footerBadges.map(({ icon: Icon, label }) => (
+                <span
+                  key={label}
+                  className="inline-flex items-center gap-1.5 rounded-full border border-ink-300 bg-white px-2.5 py-1 text-[11px] font-semibold text-ink-700"
+                >
+                  <Icon className="h-3 w-3 text-brand-600" />
+                  {label}
+                </span>
+              ))}
+              <span className="text-xs text-ink-500">Made with care in Pakistan 🇵🇰</span>
+            </div>
           </div>
         </div>
       </footer>
@@ -238,6 +307,51 @@ const contactInfo = [
   { icon: Mail, label: 'Email us', value: 'hello@intivrabot.app' },
   { icon: MapPin, label: 'Based in', value: 'Lahore, Pakistan' },
   { icon: Clock, label: 'Response time', value: 'Within 24 hours' },
+]
+
+// The two details worth acting on, repeated in the footer so someone who has
+// scrolled past the contact section doesn't have to scroll back up. `href` is
+// what makes them useful — a mailto opens a client, the map opens directions.
+const footerContact = [
+  { icon: Mail, value: 'hello@intivrabot.app', href: 'mailto:hello@intivrabot.app' },
+  { icon: MapPin, value: 'Lahore, Pakistan', href: '#contact' },
+]
+
+// What the product actually guarantees, in the place people look for trust
+// marks. Each one is a real feature of this build, not a badge for its own sake.
+const footerBadges = [
+  { icon: ShieldCheck, label: 'Face & voice verified' },
+  { icon: Languages, label: 'English & Urdu' },
+]
+
+const footerLinks = [
+  {
+    title: 'Product',
+    items: [
+      ['Features', '#features'],
+      ['How it works', '#how'],
+      ['For candidates', '#roles'],
+      ['For recruiters', '#roles'],
+    ],
+  },
+  {
+    title: 'Company',
+    items: [
+      ['About', '#'],
+      ['Careers', '#'],
+      ['Contact', '#contact'],
+      ['Blog', '/blog'],
+    ],
+  },
+  {
+    title: 'Legal',
+    items: [
+      ['Privacy', '#'],
+      ['Terms', '#'],
+      ['Security', '#'],
+      ['Consent', '#'],
+    ],
+  },
 ]
 
 function ContactSection() {
@@ -270,8 +384,8 @@ function ContactSection() {
   }
 
   return (
-    <section id="contact" className="border-t border-ink-100 bg-white">
-      <div className="mx-auto max-w-6xl px-4 py-14 sm:px-6">
+    <section id="contact" className="border-t border-ink-200 bg-white">
+      <div className="mx-auto max-w-7xl px-5 py-14 sm:px-6">
         <Reveal className="mb-8 text-center">
           <h2 className="text-3xl font-bold text-ink-900">Get in touch</h2>
           <p className="mt-2 text-ink-500">Questions, feedback, or a demo request - we’d love to hear from you.</p>

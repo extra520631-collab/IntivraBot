@@ -66,7 +66,7 @@ export default function Team() {
   }
 
   return (
-    <div className="mx-auto max-w-4xl space-y-6">
+    <div className="mx-auto max-w-6xl space-y-6">
       <div>
         <h2 className="text-xl font-bold text-ink-900">Team</h2>
         <p className="text-sm text-ink-500">

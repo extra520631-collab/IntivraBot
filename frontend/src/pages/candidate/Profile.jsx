@@ -155,7 +155,7 @@ export default function CandidateProfile() {
   }
 
   return (
-    <div className="mx-auto max-w-4xl space-y-6">
+    <div className="mx-auto max-w-6xl space-y-6">
       {/* Identity */}
       <div className="card-base p-6">
         <div className="flex flex-col items-start gap-5 sm:flex-row sm:items-center">

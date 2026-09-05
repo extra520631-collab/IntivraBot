@@ -71,7 +71,7 @@ function ReportsList({ interviews, error }) {
   }
 
   return (
-    <div className="mx-auto max-w-3xl space-y-5">
+    <div className="mx-auto max-w-6xl space-y-5">
       <div>
         <h2 className="text-xl font-bold text-ink-900">My Reports</h2>
         <p className="text-sm text-ink-500">
@@ -140,7 +140,7 @@ function Report({ interview, showBack }) {
   const trend = answered.map((q, i) => ({ t: `Q${q.order || i + 1}`, score: q.score ?? 0 }))
 
   return (
-    <div className="mx-auto max-w-5xl space-y-6">
+    <div className="mx-auto max-w-6xl space-y-6">
       {showBack && (
         <Link to="/candidate/results" className="inline-flex items-center gap-1 text-sm font-medium text-ink-500 hover:text-ink-900">
           <ArrowLeft className="h-4 w-4" /> All my reports

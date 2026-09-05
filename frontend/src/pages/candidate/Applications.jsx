@@ -27,7 +27,7 @@ export default function CandidateApplications() {
   const applications = data?.applications || []
 
   return (
-    <div className="mx-auto max-w-4xl space-y-5">
+    <div className="mx-auto max-w-6xl space-y-5">
       <div>
         <h2 className="text-xl font-bold text-ink-900">My Applications</h2>
         <p className="text-sm text-ink-500">Track the live status of every application.</p>

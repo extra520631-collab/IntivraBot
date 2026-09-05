@@ -36,6 +36,44 @@ const FALLBACK_Q = [
   'Why are you a good fit for this role?',
 ]
 
+// ── Session integrity ───────────────────────────────────────────────────────
+// An in-progress interview used to be resumable indefinitely, so a candidate
+// could read a question, close the tab, look the answer up and come back to it
+// — an open-book exam wearing an interview's clothes, and a way around the face
+// and voice checks the rest of this file works hard on.
+//
+// Long enough to survive a dropped connection, a browser crash or a phone call;
+// far too short to research an answer.
+const GRACE_MS = 5 * 60 * 1000
+// Per-question time budget. Generous for a spoken answer plus thinking time.
+const SECONDS_PER_QUESTION = 240
+
+// Has the candidate been gone longer than the grace period?
+function isAbandoned(interview) {
+  const last = interview.lastSeenAt || interview.updatedAt || interview.createdAt
+  return Date.now() - new Date(last).getTime() > GRACE_MS
+}
+
+// Has the interview run past its total budget? The clock starts when the
+// candidate finishes the device pre-check, not when the record was created —
+// otherwise time spent granting camera permissions is time taken off the
+// interview.
+function isTimedOut(interview) {
+  if (!interview.timeLimitSeconds || !interview.startedAt) return false
+  const started = new Date(interview.startedAt).getTime()
+  return Date.now() - started > interview.timeLimitSeconds * 1000
+}
+
+// Seconds left before the interview closes itself, for the countdown. Before
+// the pre-check is done this is the full budget: nothing has been used yet.
+function secondsLeft(interview) {
+  if (!interview.timeLimitSeconds) return null
+  if (!interview.startedAt) return interview.timeLimitSeconds
+  const started = new Date(interview.startedAt).getTime()
+  const left = interview.timeLimitSeconds - Math.floor((Date.now() - started) / 1000)
+  return Math.max(0, left)
+}
+
 // Used only if the AI service is unreachable (keeps the interview usable).
 function fallbackScore(text = '') {
   const words = text.trim().split(/\s+/).filter(Boolean).length
@@ -82,6 +120,17 @@ async function aiFlags() {
     geminiEnabled: Boolean(status?.geminiEnabled),
     faceEnabled: Boolean(faceStatus?.faceEnabled),
     voiceEnabled: Boolean(voiceStatus?.voiceEnabled),
+  }
+}
+
+// The rules this interview runs under, sent alongside every start/resume so the
+// candidate's UI enforces exactly what the server will.
+function policyOf(interview) {
+  return {
+    policy: {
+      allowTextAnswers: interview.allowTextAnswers !== false,
+      requireScreenShare: interview.requireScreenShare === true,
+    },
   }
 }
 
@@ -152,16 +201,48 @@ export const start = asyncHandler(async (req, res) => {
   const job = application.job
   if (!job) throw new AppError(404, 'Job not found for this application')
 
-  // Resume an in-progress interview instead of starting a duplicate.
+  // Resume an in-progress interview instead of starting a duplicate — but only
+  // if they are actually coming back to it, not returning hours later with the
+  // question researched. Whichever way it ended, it is scored and closed, and
+  // a fresh attempt is not offered: one interview per application.
   let interview = await Interview.findOne({ application: applicationId, status: 'in_progress' })
   if (interview) {
+    const expired =
+      isTimedOut(interview) ? 'timeout' : isAbandoned(interview) ? 'abandoned' : null
+    if (expired) {
+      await interview.populate('job')
+      await closeInterview(interview, expired)
+      throw new AppError(
+        410,
+        expired === 'timeout'
+          ? 'Your interview ran out of time and has been submitted. Your report covers the questions you answered.'
+          : 'You left your interview and it has been submitted. Your report covers the questions you answered.'
+      )
+    }
+
+    // A genuine reconnect — count it so the employer can see how often it
+    // happened, and refresh the clock.
+    await Interview.updateOne(
+      { _id: interview._id },
+      { $set: { lastSeenAt: new Date() }, $inc: { resumeCount: 1 } }
+    )
     return res.json({
       success: true,
       resumed: true,
       interview,
       currentQuestion: interview.questions[interview.currentIndex],
+      secondsLeft: secondsLeft(interview),
       ...(await aiFlags()),
+      ...policyOf(interview),
     })
+  }
+
+  // One interview per application: a completed one is not re-taken, however it
+  // ended. Without this, closing an abandoned run would just hand the
+  // candidate a fresh set of questions — the loophole this is meant to shut.
+  const previous = await Interview.findOne({ application: applicationId, status: 'completed' })
+  if (previous) {
+    throw new AppError(409, 'You have already taken the interview for this application.')
   }
 
   // The employer's questions are snapshotted here and always fit: the
@@ -177,6 +258,14 @@ export const start = asyncHandler(async (req, res) => {
     totalQuestions,
     hrQuestions,
     field: job.field || '',
+    // Snapshotted with the questions: the rules the candidate agreed to at the
+    // pre-check must not change under them if the job is edited mid-interview.
+    allowTextAnswers: job.allowTextAnswers !== false,
+    requireScreenShare: job.requireScreenShare !== false,
+    // Budget the whole run up front, so a job edited mid-interview can't
+    // shorten a clock the candidate is already racing.
+    timeLimitSeconds: totalQuestions * SECONDS_PER_QUESTION,
+    lastSeenAt: new Date(),
     currentIndex: 0,
     questions: [],
   })
@@ -198,6 +287,7 @@ export const start = asyncHandler(async (req, res) => {
           interview: existing,
           currentQuestion: existing.questions[existing.currentIndex],
           ...(await aiFlags()),
+          ...policyOf(existing),
         })
       }
     }
@@ -208,7 +298,10 @@ export const start = asyncHandler(async (req, res) => {
     success: true,
     interview,
     currentQuestion: interview.questions[0],
+    // null for practice, which has no time limit to run out of.
+    secondsLeft: secondsLeft(interview),
     ...(await aiFlags()),
+    ...policyOf(interview),
   })
 })
 
@@ -231,6 +324,7 @@ export const startPractice = asyncHandler(async (req, res) => {
       interview,
       currentQuestion: interview.questions[interview.currentIndex],
       ...(await aiFlags()),
+      ...policyOf(interview),
     })
   }
   // Switching topic abandons the old run.
@@ -242,6 +336,10 @@ export const startPractice = asyncHandler(async (req, res) => {
     candidate: req.user._id,
     language: language || 'English',
     totalQuestions: PRACTICE_TOPICS[key].questions,
+    // Practice has no employer to set a policy and nothing to verify against,
+    // so it never gates on typing or screen sharing.
+    allowTextAnswers: true,
+    requireScreenShare: false,
     currentIndex: 0,
     questions: [],
   })
@@ -261,6 +359,7 @@ export const startPractice = asyncHandler(async (req, res) => {
           interview: existing,
           currentQuestion: existing.questions[existing.currentIndex],
           ...(await aiFlags()),
+          ...policyOf(existing),
         })
       }
     }
@@ -271,7 +370,10 @@ export const startPractice = asyncHandler(async (req, res) => {
     success: true,
     interview,
     currentQuestion: interview.questions[0],
+    // null for practice, which has no time limit to run out of.
+    secondsLeft: secondsLeft(interview),
     ...(await aiFlags()),
+    ...policyOf(interview),
   })
 })
 
@@ -374,9 +476,12 @@ export const frame = asyncHandler(async (req, res) => {
   // seconds, so a full-document save would race the answer the candidate is
   // submitting at the same moment and one of the two would fail a version
   // check. $push touches only this array and never bumps __v.
+  // Frames arrive every few seconds while the candidate is actually at the
+  // interview, which makes this the natural heartbeat for the away-too-long
+  // check — no separate ping needed.
   await Interview.updateOne(
     { _id: interview._id },
-    { $push: { faceSamples: sample } }
+    { $push: { faceSamples: sample }, $set: { lastSeenAt: new Date() } }
   )
 
   res.json({
@@ -392,8 +497,15 @@ export const frame = asyncHandler(async (req, res) => {
 })
 
 // POST /api/interviews/:id/answer
+//
+// Despite the name this handles everything the candidate says, not just
+// answers. What they said is classified first: a real answer is scored and
+// moves the interview on, while a question, a problem or a request to repeat
+// gets a spoken reply and leaves the current question standing. That is what
+// makes this feel like a conversation rather than a form — and it stops a
+// candidate being scored zero for saying "sorry, could you repeat that?".
 export const answer = asyncHandler(async (req, res) => {
-  const { answer: answerText, mode, reason } = req.body
+  const { answer: answerText, mode, reason, hardship } = req.body
   if (!mongoose.isValidObjectId(req.params.id)) throw new AppError(400, 'Invalid interview id')
 
   const interview = await Interview.findById(req.params.id).populate('job')
@@ -401,18 +513,115 @@ export const answer = asyncHandler(async (req, res) => {
   if (String(interview.candidate) !== String(req.user._id)) throw new AppError(403, 'Not your interview')
   if (interview.status === 'completed') throw new AppError(400, 'Interview already completed')
 
+  // The gate that actually matters. Checked here as well as on /start because
+  // /start is not the only way back in: a tab left open overnight still holds a
+  // live interview id, and without this it could post an answer researched at
+  // leisure. Practice runs are exempt — there is nothing to game.
+  if (!interview.isPractice) {
+    const expired =
+      isTimedOut(interview) ? 'timeout' : isAbandoned(interview) ? 'abandoned' : null
+    if (expired) {
+      await closeInterview(interview, expired)
+      throw new AppError(
+        410,
+        expired === 'timeout'
+          ? 'Your interview ran out of time and has been submitted.'
+          : 'You were away too long, so your interview has been submitted.'
+      )
+    }
+  }
+
   const job = jobContextFor(interview)
   const idx = interview.currentIndex
   const q = interview.questions[idx]
   if (!q) throw new AppError(400, 'No active question to answer')
 
+  // Typing is the employer's decision, enforced here and not only in the UI —
+  // a candidate could otherwise just post mode:'text' straight to the API and
+  // bypass the voice biometrics entirely. A hardship request is the one way
+  // through, and it is recorded on the answer for the report.
+  const usingText = (mode || 'text') === 'text'
+  const textAllowed = interview.allowTextAnswers !== false
+  const viaHardship = Boolean(hardship) && !textAllowed
+  if (usingText && !textAllowed && !viaHardship) {
+    throw new AppError(400, 'This employer requires spoken answers for this interview.')
+  }
+
   const candidate = await candidateContext(interview.candidate)
+
+  // ── Is this actually an answer? ──────────────────────────────────────────
+  // Voice mode only. A typed answer is a deliberate act with a Submit button
+  // behind it, so there is nothing to disambiguate; sending it through the
+  // classifier would just add a round-trip and risk mis-reading a terse answer
+  // as chatter. Candidates ask their questions through the Ask control, which
+  // posts to /converse directly.
+  const talk = usingText
+    ? { intent: 'answer', complete: true, reply: '', answer: answerText }
+    : (await aiService.interviewConverse({
+        utterance: answerText,
+        question: q.text,
+        jobTitle: job.title,
+        jobSkills: job.skills,
+        previousQA: previousQA(interview),
+        turns: (interview.turns || []).slice(-6).map((t) => ({
+          role: t.role, text: t.text, intent: t.intent,
+        })),
+        language: interview.language,
+        field: interview.field || job.field || '',
+        candidate,
+      })) || { intent: 'answer', complete: true, reply: '', answer: answerText }
+
+  // Either not an answer at all, or an answer that isn't finished yet. Both
+  // get a spoken reply and leave the question standing — an interviewer who
+  // asks a follow-up hasn't moved on, so nothing is scored and no question is
+  // consumed. The partial answer is kept as a turn so the follow-up has it in
+  // context and the candidate isn't made to repeat themselves.
+  const unfinished = talk.intent === 'answer' && talk.complete === false && Boolean(talk.reply)
+  if (talk.intent !== 'answer' || unfinished) {
+    const now = new Date()
+    await Interview.updateOne(
+      { _id: interview._id },
+      {
+        $push: {
+          turns: {
+            $each: [
+              {
+                role: 'candidate',
+                text: answerText,
+                intent: unfinished ? 'answer_extension' : talk.intent,
+                order: q.order,
+                at: now,
+              },
+              { role: 'ai', text: talk.reply, intent: '', order: q.order, at: now },
+            ],
+          },
+        },
+        $set: { lastSeenAt: now },
+      }
+    )
+    return res.json({
+      success: true,
+      conversational: true,
+      intent: talk.intent,
+      // A follow-up on a half-finished answer, rather than a reply to an
+      // aside. The UI keeps what they already said instead of clearing it.
+      followUp: unfinished,
+      reply: talk.reply,
+      currentQuestion: q, // unchanged — they still owe us this answer
+      done: false,
+    })
+  }
+
+  // They answered. If they also slipped a question in, the AI's aside is kept
+  // as a turn so it can be spoken alongside the next question.
+  const scorable = (talk.answer || answerText).trim() || answerText
 
   // Record the answer before either AI call, so the question generator can see
   // it in previousQA and ask a genuine follow-up.
-  q.answer = answerText
+  q.answer = scorable
   q.mode = mode || 'text'
   if (reason) q.reason = reason
+  if (viaHardship) q.hardship = true
   q.answeredAt = new Date()
 
   const answeredCount = idx + 1
@@ -426,7 +635,7 @@ export const answer = asyncHandler(async (req, res) => {
   const [scored, next] = await Promise.all([
     aiService.interviewScore({
       question: q.text,
-      answer: answerText,
+      answer: scorable,
       jobTitle: job.title,
       jobSkills: job.skills,
       language: interview.language,
@@ -436,7 +645,7 @@ export const answer = asyncHandler(async (req, res) => {
     done ? Promise.resolve(null) : genQuestion(job, interview, answeredCount + 1, candidate),
   ])
 
-  q.score = scored?.score ?? fallbackScore(answerText)
+  q.score = scored?.score ?? fallbackScore(scorable)
   q.feedback = scored?.feedback || ''
   q.strengths = scored?.strengths || []
   q.improvements = scored?.improvements || []
@@ -452,24 +661,154 @@ export const answer = asyncHandler(async (req, res) => {
   // seconds, during which the monitoring loop appends face and voice samples;
   // a full interview.save() here would write back the stale in-memory copy
   // loaded before that and silently drop every sample captured meanwhile.
+  // An answer that carried a question with it: keep both sides of the aside so
+  // the report shows what they asked and the UI can speak the reply.
+  const asideTurns = talk.reply
+    ? [
+        { role: 'candidate', text: answerText, intent: 'question', order: q.order, at: new Date() },
+        { role: 'ai', text: talk.reply, intent: '', order: q.order, at: new Date() },
+      ]
+    : []
+
   await Interview.updateOne(
     { _id: interview._id },
     {
       $set: {
         questions: interview.questions,
         currentIndex: interview.currentIndex,
+        // Answering is proof of life too — the face check may be off, or the
+        // camera may have been denied, and neither should time them out.
+        lastSeenAt: new Date(),
       },
+      ...(asideTurns.length ? { $push: { turns: { $each: asideTurns } } } : {}),
     }
   )
 
   res.json({
     success: true,
+    reply: talk.reply || '',
     score: q.score,
     feedback: q.feedback,
     nextQuestion,
     done,
     progress: { answered: answeredCount, total: interview.totalQuestions },
   })
+})
+
+// POST /api/interviews/:id/ask
+//
+// The candidate deliberately says something to the interviewer that is not an
+// answer — a question about the role, or a problem they've hit. Separate from
+// /answer so raising your hand can never be mistaken for an attempt to answer
+// and scored, which is the thing candidates would reasonably be afraid of.
+export const ask = asyncHandler(async (req, res) => {
+  const { text } = req.body
+  if (!mongoose.isValidObjectId(req.params.id)) throw new AppError(400, 'Invalid interview id')
+
+  const interview = await Interview.findById(req.params.id).populate('job')
+  if (!interview) throw new AppError(404, 'Interview not found')
+  if (String(interview.candidate) !== String(req.user._id)) throw new AppError(403, 'Not your interview')
+  if (interview.status === 'completed') throw new AppError(400, 'Interview already completed')
+
+  const job = jobContextFor(interview)
+  const q = interview.questions[interview.currentIndex]
+  const candidate = await candidateContext(interview.candidate)
+
+  const talk = await aiService.interviewConverse({
+    utterance: text,
+    question: q?.text || '',
+    jobTitle: job.title,
+    jobSkills: job.skills,
+    previousQA: previousQA(interview),
+    turns: (interview.turns || []).slice(-6).map((t) => ({
+      role: t.role, text: t.text, intent: t.intent,
+    })),
+    language: interview.language,
+    field: interview.field || job.field || '',
+    candidate,
+  })
+
+  // The candidate chose "ask", so this is never scored even if the classifier
+  // read it as an answer — treat that reading as "they expanded on something"
+  // rather than silently turning their aside into a graded response.
+  const intent = !talk || talk.intent === 'answer' ? 'answer_extension' : talk.intent
+  const reply =
+    talk?.reply ||
+    "Thanks — I've noted that. Let's continue when you're ready."
+
+  const now = new Date()
+  await Interview.updateOne(
+    { _id: interview._id },
+    {
+      $push: {
+        turns: {
+          $each: [
+            { role: 'candidate', text, intent, order: q?.order, at: now },
+            { role: 'ai', text: reply, intent: '', order: q?.order, at: now },
+          ],
+        },
+      },
+    }
+  )
+
+  res.json({ success: true, intent, reply })
+})
+
+// POST /api/interviews/:id/begin — the candidate cleared the pre-check.
+//
+// This is what starts the clock. Doing it here rather than at /start means the
+// time spent granting camera permissions and reading the instructions is not
+// charged to the interview.
+export const begin = asyncHandler(async (req, res) => {
+  if (!mongoose.isValidObjectId(req.params.id)) throw new AppError(400, 'Invalid interview id')
+
+  const interview = await Interview.findById(req.params.id)
+  if (!interview) throw new AppError(404, 'Interview not found')
+  if (String(interview.candidate) !== String(req.user._id)) throw new AppError(403, 'Not your interview')
+  if (interview.status === 'completed') throw new AppError(400, 'Interview already completed')
+
+  const now = new Date()
+  // Only ever set once: coming back to a resumed interview must not hand the
+  // candidate a fresh clock.
+  if (!interview.startedAt) {
+    await Interview.updateOne(
+      { _id: interview._id },
+      { $set: { startedAt: now, lastSeenAt: now } }
+    )
+    interview.startedAt = now
+  } else {
+    await Interview.updateOne({ _id: interview._id }, { $set: { lastSeenAt: now } })
+  }
+
+  res.json({ success: true, secondsLeft: secondsLeft(interview) })
+})
+
+// POST /api/interviews/:id/screen — record a screen-share state change.
+export const screen = asyncHandler(async (req, res) => {
+  const { type, surface, gapSeconds } = req.body
+  if (!mongoose.isValidObjectId(req.params.id)) throw new AppError(400, 'Invalid interview id')
+
+  const interview = await Interview.findById(req.params.id).select('candidate status requireScreenShare')
+  if (!interview) throw new AppError(404, 'Interview not found')
+  if (String(interview.candidate) !== String(req.user._id)) throw new AppError(403, 'Not your interview')
+  if (interview.status === 'completed') throw new AppError(400, 'Interview already completed')
+
+  // Stopping the share mid-interview is the event worth flagging; starting it
+  // again is just the candidate fixing the problem.
+  const flagged = interview.requireScreenShare && (type === 'stopped' || type === 'wrong_surface')
+
+  await Interview.updateOne(
+    { _id: interview._id },
+    {
+      $push: { screenEvents: { type, surface: surface || '', at: new Date() } },
+      $inc: {
+        ...(flagged ? { screenFlags: 1 } : {}),
+        ...(Number(gapSeconds) > 0 ? { screenGapSeconds: Math.round(Number(gapSeconds)) } : {}),
+      },
+    }
+  )
+
+  res.json({ success: true })
 })
 
 // POST /api/interviews/:id/finish
@@ -482,6 +821,15 @@ export const finish = asyncHandler(async (req, res) => {
     return res.json({ success: true, interview, alreadyCompleted: true })
   }
 
+  const result = await closeInterview(interview, 'completed')
+  res.json({ success: true, ...result })
+})
+
+// Score and close an interview, however it ended. Shared by the candidate
+// finishing normally and by the abandon/timeout paths, so a walked-away
+// interview is marked up exactly like a finished one — unanswered questions
+// count as zero either way, and the employer still gets a report.
+async function closeInterview(interview, reason = 'completed') {
   const job = jobContextFor(interview)
   const qa = interview.questions
     .filter((q) => q.answer)
@@ -491,6 +839,10 @@ export const finish = asyncHandler(async (req, res) => {
     jobTitle: job.title,
     qa,
     passThreshold: job.passThreshold,
+    // The side conversation shapes the engagement note, never the score.
+    turns: (interview.turns || []).map((t) => ({
+      role: t.role, text: t.text, intent: t.intent,
+    })),
   })
 
   // Every question asked counts, answered or not. Averaging only the scored
@@ -549,8 +901,22 @@ export const finish = asyncHandler(async (req, res) => {
   const voiceMatchScore = avg(vSamples.map((s) => s.matchScore).filter((v) => v != null))
   const voiceFlags = vSamples.filter((s) => s.multiVoice || s.matched === false).length
 
+  // Engagement is reported, never scored — see the turns schema.
+  const askedTurns = (interview.turns || []).filter(
+    (t) => t.role === 'candidate' && t.intent === 'question'
+  )
+  const issueTurns = (interview.turns || []).filter(
+    (t) => t.role === 'candidate' && t.intent === 'issue'
+  )
+
   interview.status = 'completed'
+  interview.endedReason = reason
   interview.overallScore = overall
+  interview.engagement = {
+    questionsAsked: summary?.engagement?.questionsAsked ?? askedTurns.length,
+    issuesReported: summary?.engagement?.issuesReported ?? issueTurns.length,
+    note: summary?.engagement?.note || '',
+  }
   interview.verdict = summary?.verdict || ''
   interview.strengths = summary?.strengths || []
   interview.improvements = summary?.improvements || []
@@ -565,7 +931,7 @@ export const finish = asyncHandler(async (req, res) => {
   // A practice run stops here: no application to update, and nothing is sent
   // to HR. The candidate still gets their score and feedback in the response.
   if (interview.isPractice) {
-    return res.json({ success: true, interview, practice: true })
+    return { interview, practice: true }
   }
 
   // Reflect the outcome on the application.
@@ -576,24 +942,42 @@ export const finish = asyncHandler(async (req, res) => {
     application.emotionScore = emotionScore
     // Flag text-mode answers plus any face/voice/identity anomalies for HR.
     const textAnswers = interview.questions.filter((q) => q.mode === 'text' && q.answer).length
-    totalFlags = faceFlags + voiceFlags + textAnswers
+    // Screen-share interruptions on a job that required it, and any answer
+    // typed under a hardship exception the employer had not sanctioned.
+    const screenFlags = interview.screenFlags || 0
+    const hardshipAnswers = interview.questions.filter((q) => q.hardship).length
+    // An interview that was walked away from is itself worth an employer's
+    // attention, however the remaining questions happened to score.
+    const abandonFlag = reason === 'completed' ? 0 : 1
+    totalFlags =
+      faceFlags + voiceFlags + textAnswers + screenFlags + hardshipAnswers + abandonFlag
     application.flags = totalFlags
     application.status = overall >= job.passThreshold ? 'passed' : 'rejected'
     await application.save()
   }
 
   // Realtime notifications: candidate gets their report, HR gets the completion.
+  const ended =
+    reason === 'abandoned' ? 'was ended after they left'
+    : reason === 'timeout' ? 'ran out of time'
+    : 'finished'
   const cand = await User.findById(interview.candidate).select('name')
   notify(interview.candidate, {
     type: 'interview',
-    title: 'Your interview report is ready',
-    body: `You scored ${overall}% on ${job.title}.`,
+    title:
+      reason === 'completed'
+        ? 'Your interview report is ready'
+        : 'Your interview was closed',
+    body:
+      reason === 'completed'
+        ? `You scored ${overall}% on ${job.title}.`
+        : `Your ${job.title} interview ${ended}. You scored ${overall}% on what you answered.`,
     link: `/candidate/results?id=${interview._id}`,
   })
   notify(job.hr, {
     type: 'interview',
     title: 'Candidate completed an interview',
-    body: `${cand?.name || 'A candidate'} finished ${job.title} — ${overall}%.`,
+    body: `${cand?.name || 'A candidate'}'s ${job.title} interview ${ended} — ${overall}%.`,
     link: `/hr/report/${interview.application}`,
   })
   if (totalFlags > 0) {
@@ -605,8 +989,8 @@ export const finish = asyncHandler(async (req, res) => {
     })
   }
 
-  res.json({ success: true, interview })
-})
+  return { interview }
+}
 
 // GET /api/interviews/mine  — the candidate's own interview reports (newest first)
 export const myInterviews = asyncHandler(async (req, res) => {

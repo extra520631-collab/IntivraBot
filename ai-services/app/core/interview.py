@@ -104,6 +104,177 @@ def next_question(
     return bank[(idx // 2) % len(bank)]
 
 
+# ── Conversation: understanding what the candidate just said ──
+#
+# A real interview is not a form. The candidate might answer the question, ask
+# one of their own, say the audio cut out, or ask for a moment. Treating all of
+# that as "the answer" and scoring it is what made the old flow feel robotic —
+# and it scored people badly for saying "sorry, could you repeat that?".
+#
+# So every utterance is classified first, and only a genuine answer is scored.
+
+_INTENTS = ("answer", "question", "issue", "clarification", "smalltalk")
+
+# Phrases that betray an intent even with no model available. Deliberately
+# conservative: when the offline path is unsure it says "answer", because
+# mis-scoring an answer as chatter loses the candidate their marks entirely.
+_QUESTION_CUES = (
+    "can i ask", "i have a question", "may i ask", "what about", "could you tell me",
+    "is this role", "does the role", "what is the team", "who would i", "how many",
+    "what does the company", "quick question", "one question",
+)
+_ISSUE_CUES = (
+    "can't hear", "cannot hear", "can not hear", "didn't hear", "did not hear",
+    "mic is not", "mic isn't", "microphone is not", "microphone isn't",
+    "not working", "cut out", "cutting out", "broke up", "breaking up",
+    "internet is", "connection is", "lagging", "freeze", "frozen", "froze",
+    "repeat that", "say that again", "repeat the question", "come again",
+)
+_CLARIFY_CUES = (
+    "what do you mean", "do you mean", "are you asking", "just to clarify",
+    "should i talk about", "in what sense", "which one do you",
+)
+
+
+def _offline_intent(text: str) -> str:
+    low = (text or "").strip().lower()
+    if not low:
+        return "answer"
+    if any(c in low for c in _ISSUE_CUES):
+        return "issue"
+    if any(c in low for c in _CLARIFY_CUES):
+        return "clarification"
+    if any(c in low for c in _QUESTION_CUES):
+        return "question"
+    # A short utterance that is only a question is a question, not an answer.
+    if low.endswith("?") and len(low.split()) <= 25:
+        return "question"
+    return "answer"
+
+
+def _offline_reply(intent: str, question: str) -> str:
+    if intent == "issue":
+        return (
+            "No problem, thanks for flagging it — take your time. "
+            f"The question again: {question}"
+        )
+    if intent == "clarification":
+        return (
+            "Sure, let me put it another way. Answer it from your own experience — "
+            f"whatever you have actually done is what I'm interested in. {question}"
+        )
+    if intent == "question":
+        return (
+            "That's a fair question. I don't have the full detail on that from here — "
+            "the hiring team will cover it properly at the next stage, and I'll note that you asked. "
+            f"Shall we carry on? {question}"
+        )
+    return "Got it, thanks. Let's keep going."
+
+
+def converse(
+    utterance,
+    question,
+    job_title,
+    job_skills=None,
+    previous_qa=None,
+    turns=None,
+    language="English",
+    field=None,
+    candidate=None,
+):
+    """Classify what the candidate just said and, if it isn't an answer, reply.
+
+    Returns {intent, complete, reply, answer}:
+      intent   — one of _INTENTS
+      complete — False when they answered but clearly haven't finished, so the
+                 interviewer should probe rather than move on
+      reply    — what the interviewer says back ("" when the answer is complete,
+                 because the next question is the reply)
+      answer   — the part of the utterance to score, when they answered *and*
+                 asked something in the same breath. Empty means "not an answer".
+    """
+    job_skills = job_skills or []
+    guide = rubric(field or detect_field(job_title, job_skills))
+
+    if gemini.is_enabled():
+        history = "\n".join(
+            f"Q: {qa.get('question','')}\nA: {qa.get('answer','')}"
+            for qa in (previous_qa or [])[-3:]
+        ) or "(this is the first question)"
+        recent = "\n".join(
+            f"{t.get('role','')}: {t.get('text','')}" for t in (turns or [])[-6:]
+        ) or "(no side conversation yet)"
+        prompt = (
+            f"You are a warm, professional {guide['label']} interviewer conducting a live "
+            f"interview for a '{job_title}' role. You are mid-interview, speaking with the candidate.\n\n"
+            f"The question you just asked: {question}\n\n"
+            f"Earlier in the interview:\n{history}\n\n"
+            f"Recent side conversation:\n{recent}\n\n"
+            f"The candidate just said:\n\"{utterance}\"\n\n"
+            "Work out what they are doing:\n"
+            "  answer        — they are answering your question\n"
+            "  question      — they are asking you something (about the role, team, process, company)\n"
+            "  issue         — they hit a problem (audio, connection, didn't hear you, need a moment)\n"
+            "  clarification — they want your question explained before they answer\n"
+            "  smalltalk     — pleasantries, thinking aloud, nothing to score\n\n"
+            "When it IS an answer, decide whether they have actually finished answering:\n"
+            "  complete   — they gave a real answer to what you asked. Move on.\n"
+            "  incomplete — they trailed off mid-thought, or answered only part of a "
+            "multi-part question, or said something so vague it is not yet an answer "
+            "(\"I've used it a bit\", \"yeah I know that one\").\n"
+            "Set \"complete\" to true or false. When false, write a short spoken follow-up in "
+            "\"reply\" that presses on exactly the missing part — the way a real interviewer says "
+            "\"can you give me an example of that?\" or \"and how did you handle the errors?\". "
+            "Ask about what they left out, never re-read the original question.\n"
+            "Be fair: a brief but genuinely complete answer is complete. Only mark it incomplete "
+            "when a real interviewer would actually push for more.\n"
+            "If they answered AND asked something, set intent to \"answer\", put the answer part in "
+            "\"answer\", and briefly address their aside in \"reply\".\n"
+            "Otherwise write what you would actually say out loud: acknowledge them like a human "
+            "interviewer would, help if you can, then steer back to the question.\n"
+            "CRITICAL — you know nothing about this employer beyond the job title and required "
+            "skills listed above. You do NOT know the salary, the location or whether it is "
+            "remote, the team size, who they would report to, the benefits, the other stages, or "
+            "when they will hear back. If they ask about any of that you MUST say you don't have "
+            "that detail and that you will pass the question to the hiring team. Never guess and "
+            "never state such a detail as fact, even a plausible-sounding one — a candidate acting "
+            "on an invented answer is worse than no answer. You may only explain what the question "
+            "itself is asking, or how the interview works mechanically.\n"
+            "Never reveal the score, how answers are graded, or what a good answer would be.\n"
+            "Keep the reply under 60 words, spoken plainly, no lists or markdown.\n"
+            f"Speak in {language}.\n\n"
+            'Respond in strict JSON with keys: intent (one of "answer", "question", "issue", '
+            '"clarification", "smalltalk"), complete (boolean — only meaningful when intent is '
+            '"answer"), reply (string), answer (string — the scorable part, '
+            'or "" if they did not answer).'
+        )
+        # Low temperature: the classification decides whether someone gets
+        # scored at all, so it must not wobble between runs.
+        data = gemini.generate_json(prompt, temperature=0.3)
+        if data and data.get("intent") in _INTENTS:
+            intent = data["intent"]
+            return {
+                "intent": intent,
+                # Only an answer can be incomplete; everything else was never an
+                # attempt to answer in the first place.
+                "complete": bool(data.get("complete", True)) if intent == "answer" else True,
+                "reply": str(data.get("reply") or "")[:600],
+                "answer": str(data.get("answer") or (utterance if intent == "answer" else ""))[:5000],
+            }
+
+    intent = _offline_intent(utterance)
+    return {
+        "intent": intent,
+        # With no model to judge depth, treat every answer as finished. Probing
+        # on a word count alone would nag candidates who gave a good short
+        # answer, which is worse than occasionally moving on too early.
+        "complete": True,
+        "reply": "" if intent == "answer" else _offline_reply(intent, question),
+        "answer": utterance if intent == "answer" else "",
+    }
+
+
 # ── Answer scoring ──
 def score_answer(question, answer, job_title, job_skills, language="English", field=None, candidate=None):
     guide = rubric(field or detect_field(job_title, job_skills))
@@ -272,19 +443,32 @@ def _fallback_score(answer, job_skills):
 
 
 # ── Final summary ──
-def summarize(job_title, qa, pass_threshold=75):
+def summarize(job_title, qa, pass_threshold=75, turns=None):
     scores = [q.get("score", 0) for q in qa if q.get("score") is not None]
     overall = round(sum(scores) / len(scores)) if scores else 0
+
+    # What the candidate raised outside their answers. Counted here so the
+    # report can show it, but never folded into the score — asking questions is
+    # a signal for the employer to read, not a mark to earn.
+    turns = turns or []
+    asked = [t for t in turns if t.get("role") == "candidate" and t.get("intent") == "question"]
+    issues = [t for t in turns if t.get("role") == "candidate" and t.get("intent") == "issue"]
 
     if gemini.is_enabled():
         transcript = "\n".join(
             f"Q: {q.get('question','')}\nA: {q.get('answer','')}\nScore: {q.get('score')}"
             for q in qa
         )
+        asked_block = "\n".join(f"- {t.get('text','')}" for t in asked) or "(none)"
         prompt = (
             f"Summarize this interview for a '{job_title}' role.\n{transcript}\n\n"
+            f"Questions the candidate asked the interviewer:\n{asked_block}\n\n"
+            "Judge the answers only. The questions they asked are context on how engaged "
+            "they were — describe them in 'engagementNote', and do not let them change the verdict.\n\n"
             f"Respond in strict JSON with keys: verdict (one short sentence), "
-            f"strengths (array of up to 3 phrases), improvements (array of up to 3 phrases)."
+            f"strengths (array of up to 3 phrases), improvements (array of up to 3 phrases), "
+            f"engagementNote (one short sentence on what their questions show about their "
+            f"interest and understanding, or \"\" if they asked none)."
         )
         data = gemini.generate_json(prompt)
         if data:
@@ -293,6 +477,11 @@ def summarize(job_title, qa, pass_threshold=75):
                 "verdict": str(data.get("verdict", ""))[:300] or _verdict(overall, pass_threshold),
                 "strengths": _as_list(data.get("strengths")),
                 "improvements": _as_list(data.get("improvements")),
+                "engagement": {
+                    "questionsAsked": len(asked),
+                    "issuesReported": len(issues),
+                    "note": str(data.get("engagementNote", ""))[:300],
+                },
             }
 
     # Fallback: aggregate per-question feedback.
@@ -305,6 +494,14 @@ def summarize(job_title, qa, pass_threshold=75):
         "verdict": _verdict(overall, pass_threshold),
         "strengths": _dedupe(strengths)[:3],
         "improvements": _dedupe(improvements)[:3],
+        "engagement": {
+            "questionsAsked": len(asked),
+            "issuesReported": len(issues),
+            "note": (
+                f"Asked {len(asked)} question{'' if len(asked) == 1 else 's'} during the interview."
+                if asked else ""
+            ),
+        },
     }
 
 

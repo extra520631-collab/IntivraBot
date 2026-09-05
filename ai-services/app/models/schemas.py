@@ -105,10 +105,46 @@ class ScoreResponse(BaseModel):
     improvements: list[str]
 
 
+# One line of side conversation — the candidate asking something, or the AI
+# answering. Kept apart from QA because these are never scored.
+class Turn(BaseModel):
+    role: str = ""  # "candidate" | "ai"
+    text: str = ""
+    intent: str = ""
+
+
+class ConverseRequest(BaseModel):
+    utterance: str
+    question: str = ""
+    jobTitle: str = ""
+    jobSkills: list[str] = Field(default_factory=list)
+    previousQA: list[QA] = Field(default_factory=list)
+    turns: list[Turn] = Field(default_factory=list)
+    language: str = "English"
+    field: str = ""
+    candidate: CandidateContext | None = None
+
+
+class ConverseResponse(BaseModel):
+    intent: str
+    # False when they answered but haven't finished — the interviewer follows up
+    # instead of moving to the next question.
+    complete: bool = True
+    reply: str = ""
+    answer: str = ""
+
+
+class Engagement(BaseModel):
+    questionsAsked: int = 0
+    issuesReported: int = 0
+    note: str = ""
+
+
 class SummaryRequest(BaseModel):
     jobTitle: str = ""
     qa: list[QA] = Field(default_factory=list)
     passThreshold: int = 75
+    turns: list[Turn] = Field(default_factory=list)
 
 
 class SummaryResponse(BaseModel):
@@ -116,6 +152,7 @@ class SummaryResponse(BaseModel):
     verdict: str
     strengths: list[str]
     improvements: list[str]
+    engagement: Engagement = Field(default_factory=Engagement)
 
 
 # ── Face + Emotion (Phase 5) ──

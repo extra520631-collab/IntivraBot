@@ -86,7 +86,18 @@ body {
   .label-base {
     @apply mb-1.5 block text-sm font-medium text-ink-700;
   }
+  /* The border is written as a literal rather than @apply border-ink-300 so
+     this file never depends on the theme having that step — at ink-200 the
+     edge all but vanished against the white page, leaving cards reading as
+     floating text instead of contained boxes. */
   .card-base {
-    @apply rounded-xl border border-ink-200 bg-white shadow-card;
+    @apply rounded-xl bg-white shadow-card;
+    border: 1px solid #cbd5e1;
+    transition: border-color 0.2s ease, box-shadow 0.2s ease;
+  }
+  /* Every card picks up the brand edge on hover. Written here rather than on
+     each call site so a new card never has to remember to opt in. */
+  .card-base:hover {
+    border-color: #ea580c;
   }
 }

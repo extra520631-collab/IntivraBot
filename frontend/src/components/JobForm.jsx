@@ -191,6 +191,11 @@ export default function JobForm({
   const [questions, setQuestions] = useState(initial.customQuestions || [])
   const [questionInput, setQuestionInput] = useState('')
   const [questionCount, setQuestionCount] = useState(initial.questionCount ?? 5)
+  // How the interview is conducted. These are the employer's call, not the
+  // candidate's — a candidate who could switch to typing at will would be
+  // opting out of the voice check that verifies who is answering.
+  const [allowTextAnswers, setAllowTextAnswers] = useState(initial.allowTextAnswers ?? true)
+  const [requireScreenShare, setRequireScreenShare] = useState(initial.requireScreenShare ?? true)
 
   const set = (k) => (e) => setForm((f) => ({ ...f, [k]: e.target.value }))
   const setPayField = (k) => (e) =>
@@ -259,6 +264,8 @@ export default function JobForm({
         customQuestions: questions,
         // Always leave room for the warm-up plus every HR question.
         questionCount: Math.max(questionCount, questions.length + 1),
+        allowTextAnswers,
+        requireScreenShare,
         ...(showStatus ? { status: form.status } : {}),
       })
     } catch {
@@ -571,6 +578,35 @@ export default function JobForm({
       </Card>
 
       <Card>
+        <CardHeader
+          title="Interview conditions"
+          subtitle="How candidates take this interview — only you can set these"
+        />
+        <CardBody className="space-y-3">
+          <ToggleRow
+            label="Allow typed answers"
+            hint={
+              allowTextAnswers
+                ? 'Candidates may type instead of speaking. Typed answers skip the voice check and are flagged in the report.'
+                : 'Answers must be spoken. A candidate with a genuine mic or hearing problem can still request an exception — it is accepted and flagged for you.'
+            }
+            checked={allowTextAnswers}
+            onChange={setAllowTextAnswers}
+          />
+          <ToggleRow
+            label="Require full screen share"
+            hint={
+              requireScreenShare
+                ? 'Candidates must share their entire screen before the interview starts. Stopping it mid-interview is flagged.'
+                : 'Candidates are not asked to share their screen.'
+            }
+            checked={requireScreenShare}
+            onChange={setRequireScreenShare}
+          />
+        </CardBody>
+      </Card>
+
+      <Card>
         <CardHeader title="Thresholds" subtitle="Two gates: one to apply, one to pass" />
         <CardBody className="space-y-5">
           {/* Stacked, not side by side — the rail is too narrow for two sliders. */}
@@ -603,5 +639,38 @@ export default function JobForm({
       </div>
       </div>
     </div>
+  )
+}
+
+// A labelled switch for the interview-conditions card. Written as a real
+// checkbox so it keeps keyboard focus and screen-reader semantics for free.
+function ToggleRow({ label, hint, checked, onChange }) {
+  return (
+    <label className="flex cursor-pointer items-start gap-3 rounded-lg border border-ink-200 bg-ink-50/40 p-3 transition hover:border-ink-300">
+      <input
+        type="checkbox"
+        checked={checked}
+        onChange={(e) => onChange(e.target.checked)}
+        className="peer sr-only"
+      />
+      <span
+        aria-hidden="true"
+        className="mt-0.5 flex h-5 w-9 shrink-0 items-center rounded-full bg-ink-300 p-0.5 transition peer-focus-visible:ring-2 peer-focus-visible:ring-brand-500 peer-focus-visible:ring-offset-2 peer-checked:bg-brand-600"
+      >
+        {/* Driven by `checked` rather than a peer- variant: the knob is a child
+            of the track, not a sibling of the input, so peer-checked can't
+            reach it. */}
+        <span
+          className={cn(
+            'h-4 w-4 rounded-full bg-white shadow transition-transform',
+            checked && 'translate-x-4'
+          )}
+        />
+      </span>
+      <span className="min-w-0">
+        <span className="block text-sm font-semibold text-ink-900">{label}</span>
+        <span className="mt-0.5 block text-xs leading-relaxed text-ink-500">{hint}</span>
+      </span>
+    </label>
   )
 }

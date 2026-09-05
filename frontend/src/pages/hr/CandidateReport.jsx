@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useParams, Link } from 'react-router-dom'
 import {
-  ArrowLeft, Check, AlertTriangle, Download, ScanFace, Mic, Type,
+  ArrowLeft, Check, AlertTriangle, Download, ScanFace, Mic, Type, MonitorUp,
   MessageSquare, TrendingUp, TrendingDown, Clock, FileText, ExternalLink, Loader2,
 } from 'lucide-react'
 import { Card, CardHeader, CardBody } from '../../components/ui/Card'
@@ -110,6 +110,19 @@ function Report({ application, interview }) {
   const voiceMatch = interview?.voiceMatchScore
   const voiceFlags = interview?.voiceFlags ?? 0
 
+  // Screen share
+  const screenFlags = interview?.screenFlags ?? 0
+  const screenRequired = interview?.requireScreenShare === true
+  const screenGap = interview?.screenGapSeconds ?? 0
+
+  // The side conversation, paired so each thing the candidate raised shows the
+  // interviewer's reply underneath it. Turns are stored flat and strictly in
+  // order (candidate, then ai), so the reply is simply the next entry.
+  const turns = interview?.turns || []
+  const candidateTurns = turns
+    .map((t, i) => ({ ...t, reply: turns[i + 1]?.role === 'ai' ? turns[i + 1].text : '' }))
+    .filter((t) => t.role === 'candidate')
+
   // Overall = average of the scores we actually have.
   const known = [ats, interviewScore, emotion].filter((v) => v != null)
   const overall = known.length ? Math.round(known.reduce((a, b) => a + b, 0) / known.length) : 0
@@ -124,7 +137,7 @@ function Report({ application, interview }) {
   ]
 
   return (
-    <div className="mx-auto max-w-5xl space-y-6">
+    <div className="mx-auto max-w-6xl space-y-6">
       <Link to="/hr/applications" className="inline-flex items-center gap-1 text-sm font-medium text-ink-500 hover:text-ink-900">
         <ArrowLeft className="h-4 w-4" /> Back to applications
       </Link>
@@ -276,6 +289,7 @@ function Report({ application, interview }) {
                     {q.mode === 'text' && (
                       <span className="mt-2 ml-6 inline-flex items-center gap-1 text-xs font-medium text-amber-600">
                         <Type className="h-3.5 w-3.5" /> Answered in text{q.reason ? ` — reason: ${q.reason}` : ''}
+                        {q.hardship && ' (exception — you required spoken answers)'}
                       </span>
                     )}
                   </div>
@@ -283,6 +297,42 @@ function Report({ application, interview }) {
               )}
             </CardBody>
           </Card>
+
+          {/* What the candidate said outside their answers. Never scored — it
+              is here because how someone engages is worth seeing, not because
+              it earns them marks. */}
+          {candidateTurns.length > 0 && (
+            <Card>
+              <CardHeader
+                title="Candidate's questions & remarks"
+                subtitle="Raised during the interview — not part of the score"
+              />
+              <CardBody className="space-y-3">
+                {interview?.engagement?.note && (
+                  <p className="rounded-lg bg-ink-50 px-3 py-2 text-xs leading-relaxed text-ink-600">
+                    {interview.engagement.note}
+                  </p>
+                )}
+                {candidateTurns.map((t, i) => (
+                  <div key={i} className="rounded-lg border border-ink-100 p-3">
+                    <div className="flex items-start justify-between gap-3">
+                      <p className="text-sm text-ink-800">“{t.text}”</p>
+                      <Badge tone={t.intent === 'issue' ? 'amber' : 'gray'}>
+                        {t.intent === 'issue' ? 'reported an issue'
+                          : t.intent === 'clarification' ? 'asked to clarify'
+                          : 'question'}
+                      </Badge>
+                    </div>
+                    {t.reply && (
+                      <p className="mt-2 border-l-2 border-ink-100 pl-3 text-xs leading-relaxed text-ink-500">
+                        {t.reply}
+                      </p>
+                    )}
+                  </div>
+                ))}
+              </CardBody>
+            </Card>
+          )}
         </div>
 
         {/* Right column */}
@@ -345,6 +395,19 @@ function Report({ application, interview }) {
               {voiceFlags > 0 && (
                 <VerifyRow icon={AlertTriangle} label="Voice flags" value={String(voiceFlags)} tone="warn" />
               )}
+              {screenRequired && (
+                <VerifyRow
+                  icon={MonitorUp}
+                  label="Screen share"
+                  value={
+                    screenFlags === 0
+                      ? 'Unbroken'
+                      : `${screenFlags} interruption${screenFlags === 1 ? '' : 's'}` +
+                        (screenGap > 0 ? ` (${formatGap(screenGap)})` : '')
+                  }
+                  tone={screenFlags === 0 ? 'ok' : 'warn'}
+                />
+              )}
             </CardBody>
           </Card>
 
@@ -392,4 +455,11 @@ function VerifyRow({ icon: Icon, label, value, tone }) {
       </span>
     </div>
   )
+}
+
+// How long the interview ran without the required screen share.
+function formatGap(seconds) {
+  if (seconds < 60) return `${seconds}s unshared`
+  const m = Math.floor(seconds / 60)
+  return `${m}m ${seconds % 60}s unshared`
 }

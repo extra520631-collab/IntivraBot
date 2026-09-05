@@ -3,6 +3,8 @@ from fastapi import APIRouter
 from app.core import interview, gemini
 from app.core.fields import detect_field, rubric
 from app.models.schemas import (
+    ConverseRequest,
+    ConverseResponse,
     QuestionRequest,
     QuestionResponse,
     ScoreRequest,
@@ -51,6 +53,26 @@ def score(body: ScoreRequest):
     )
 
 
+@router.post("/interview/converse", response_model=ConverseResponse)
+def converse(body: ConverseRequest):
+    """What did the candidate just say — an answer, a question, or a problem?
+
+    This is what makes the interview a conversation rather than a form: only a
+    genuine answer goes on to be scored, and anything else gets a spoken reply.
+    """
+    return interview.converse(
+        body.utterance,
+        body.question,
+        body.jobTitle,
+        body.jobSkills,
+        [qa.model_dump() for qa in body.previousQA],
+        [t.model_dump() for t in body.turns],
+        body.language,
+        field=body.field or detect_field(body.jobTitle, body.jobSkills),
+        candidate=body.candidate.model_dump() if body.candidate else None,
+    )
+
+
 @router.post("/interview/detect-field")
 def field_of(body: QuestionRequest):
     """Which field a role falls into — used when an HR posts a job."""
@@ -61,5 +83,8 @@ def field_of(body: QuestionRequest):
 @router.post("/interview/summary", response_model=SummaryResponse)
 def summary(body: SummaryRequest):
     return interview.summarize(
-        body.jobTitle, [qa.model_dump() for qa in body.qa], body.passThreshold
+        body.jobTitle,
+        [qa.model_dump() for qa in body.qa],
+        body.passThreshold,
+        turns=[t.model_dump() for t in body.turns],
     )

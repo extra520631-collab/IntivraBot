@@ -57,6 +57,16 @@ const jobSchema = new Schema(
     // Asked after a warm-up; the AI fills whatever slots are left.
     customQuestions: { type: [String], default: [] },
     questionCount: { type: Number, min: 3, max: 15, default: 5 },
+    // Whether candidates may type their answers instead of speaking them.
+    // This is the employer's call, not the candidate's: a spoken answer is what
+    // the voice biometrics verify, so letting candidates opt out at will would
+    // make the identity check optional in practice. When this is off a
+    // candidate with a genuine problem can still raise a hardship request
+    // (see Interview.textHardship) — the answer is accepted and flagged rather
+    // than the candidate being locked out.
+    allowTextAnswers: { type: Boolean, default: true },
+    // Candidates must share their whole screen for the interview to run.
+    requireScreenShare: { type: Boolean, default: true },
     // Which line of work this role is in — drives the interview's question
     // style. Auto-detected from the title + skills when the HR doesn't pick.
     field: { type: String, trim: true, default: '' },
