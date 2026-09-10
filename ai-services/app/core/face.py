@@ -50,10 +50,31 @@ def models_available() -> bool:
     return all(os.path.exists(p) for p in (_YUNET, _SFACE, _FERPLUS))
 
 
+# Detector confidence. Raised from 0.7, which let posters and framed
+# photographs behind the candidate register as people — an office wall with
+# portraits on it reported "5 people" and, with the two-strike rule, would have
+# ended an honest interview.
+#
+# Not raised further on purpose: confidence alone is the wrong tool here. A
+# real face at a bad angle or in poor light can score lower than a well-lit
+# photograph, so pushing this up starts losing genuine candidates before it
+# stops posters. The size filter below is what actually separates the two.
+_DETECT_CONFIDENCE = 0.8
+
+# A second person in the room sits at roughly the candidate's own distance, so
+# their face is a similar size. Anything much smaller than the main face is
+# background — a photo on a shelf, someone through a doorway, a reflection.
+# Expressed as a fraction of the largest face's height so it holds whatever the
+# candidate's camera resolution or seating distance happens to be.
+_MIN_RELATIVE_FACE = 0.45
+
+
 def _detector_get():
     global _detector
     if _detector is None:
-        _detector = cv2.FaceDetectorYN.create(_YUNET, "", (320, 320), 0.7, 0.3, 5000)
+        _detector = cv2.FaceDetectorYN.create(
+            _YUNET, "", (320, 320), _DETECT_CONFIDENCE, 0.3, 5000
+        )
     return _detector
 
 
@@ -103,12 +124,28 @@ def decode_image(data: str | bytes) -> np.ndarray | None:
 
 
 def _detect(img: np.ndarray) -> np.ndarray:
-    """Return an Nx15 array of detected faces (may be empty)."""
+    """Return an Nx15 array of detected faces (may be empty).
+
+    Background faces are dropped here rather than by the caller, so every
+    consumer — the person count, the identity match, the emotion read — sees
+    the same set. A framed photograph on the wall behind the candidate is not a
+    person in the room, and counting it as one ends an honest interview.
+    """
     det = _detector_get()
     h, w = img.shape[:2]
     det.setInputSize((w, h))
     _, faces = det.detect(img)
-    return faces if faces is not None else np.empty((0, 15), dtype=np.float32)
+    if faces is None or len(faces) == 0:
+        return np.empty((0, 15), dtype=np.float32)
+
+    # Keep only faces comparable in size to the largest one. With a single
+    # person in shot this changes nothing; with a poster behind them it drops
+    # the poster.
+    heights = faces[:, 3]
+    tallest = float(heights.max())
+    if tallest > 0:
+        faces = faces[heights >= tallest * _MIN_RELATIVE_FACE]
+    return faces
 
 
 def _largest(faces: np.ndarray) -> np.ndarray:

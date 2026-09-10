@@ -28,6 +28,16 @@ const textReasons = [
 const SpeechRecognition =
   typeof window !== 'undefined' && (window.SpeechRecognition || window.webkitSpeechRecognition)
 
+// BCP-47 tag for speech recognition and text-to-speech.
+//
+// Roman Urdu maps to Urdu, not English: it is Urdu being spoken, and it is only
+// the *writing* that uses Latin letters. Recognising it as en-US turns "aap ne
+// kya kaam kiya" into nonsense, so the audio side must stay ur-PK even though
+// the text the model reads and writes is romanised.
+function speechLang(language) {
+  return language === 'Urdu' || language === 'Roman Urdu' ? 'ur-PK' : 'en-US'
+}
+
 // How often the webcam is sampled during the interview. Fast enough that
 // nobody can swap places between reads, slow enough not to flood a small
 // server or a candidate's uplink.
@@ -88,7 +98,10 @@ export default function Interview() {
   // A practice run has no application — the topic drives the questions instead.
   const practiceTopic = location.state?.practiceTopic || search.get('practice')
   const isPractice = Boolean(practiceTopic) && !applicationId
-  const language = location.state?.language || 'English'
+  // The employer sets the language on the job, so the server is the authority:
+  // this is only the value used before /start replies, and for practice runs
+  // which have no employer.
+  const [language, setLanguage] = useState(location.state?.language || 'English')
 
   // loading | precheck | active | submitting | finishing | error
   const [phase, setPhase] = useState('loading')
@@ -127,9 +140,6 @@ export default function Interview() {
   const [lastResult, setLastResult] = useState(null)
 
   // The candidate raising their hand mid-question.
-  const [askOpen, setAskOpen] = useState(false)
-  const [askText, setAskText] = useState('')
-  const [asking, setAsking] = useState(false)
   // Set once the candidate has declared a blocker on a job that forbids typing.
   const [hardship, setHardship] = useState(false)
 
@@ -193,6 +203,8 @@ export default function Interview() {
           : await api.post('/interviews/start', { applicationId, language })
         if (!alive) return
         setInterview(res.interview)
+        // Whatever the employer chose on the job wins over the router state.
+        if (res.interview?.language) setLanguage(res.interview.language)
         interviewIdRef.current = res.interview?._id
         setTotal(res.interview?.totalQuestions || 5)
         setCurrent(res.currentQuestion)
@@ -395,60 +407,18 @@ export default function Interview() {
     screenStreamRef.current = null
   }, [])
 
-  // ── Screen share: notice when it stops, and help them restore it ────────────
-  useEffect(() => {
-    if (phase !== 'active' || !policy.requireScreenShare) return
-    const track = screenStreamRef.current?.getVideoTracks?.()[0]
-    if (!track) return
-    const onEnded = () => {
-      shareLostAtRef.current = Date.now()
-      setSharing(false)
-      screenStreamRef.current = null
-      reportScreen('stopped')
-      // Stopping a share the employer requires is a deliberate act — there is
-      // no accidental way to do it — so it counts as a strike straight away.
-      reportViolation('screen_share')
-    }
-    track.addEventListener('ended', onEnded)
-    return () => track.removeEventListener('ended', onEnded)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [phase, sharing, policy.requireScreenShare, interview?._id])
-
-  // ── Leaving the interview tab ─────────────────────────────────────────────
-  // Switching away is the cheapest way to look an answer up, and the one thing
-  // the camera cannot see. Timed rather than instant: a notification stealing
-  // focus for a second is not cheating, and the candidate was told the rule on
-  // the terms screen before they agreed to it.
-  useEffect(() => {
-    if (phase !== 'active' || isPractice) return
-    let awayTimer = null
-    const onVisibility = () => {
-      if (document.hidden) {
-        awayTimer = setTimeout(() => reportViolation('tab_switch'), TAB_AWAY_MS)
-      } else {
-        clearTimeout(awayTimer)
-        awayTimer = null
-      }
-    }
-    document.addEventListener('visibilitychange', onVisibility)
-    return () => {
-      clearTimeout(awayTimer)
-      document.removeEventListener('visibilitychange', onVisibility)
-    }
-  }, [phase, isPractice, reportViolation])
-
-  async function reportScreen(type, surface = '', gapSeconds = 0) {
-    if (!interview?._id || isPractice) return
-    try {
-      await api.post(`/interviews/${interview._id}/screen`, { type, surface, gapSeconds })
-    } catch { /* best-effort: never block the interview on telemetry */ }
-  }
-
   // ── Report a broken rule and act on what the server decides ───────────────
   //
   // The client detects, the server judges. Strike counting lives on the server
   // precisely because this file is the thing being policed — all this does is
   // show the candidate the outcome.
+  //
+  // Declared ABOVE the effects that use it, not beside the other proctoring
+  // helpers further down. A `const` arrow function is in its temporal dead zone
+  // until its own line runs, and an effect's dependency array is evaluated
+  // during render — so listing it as a dependency below its declaration threw
+  // "Cannot access 'reportViolation' before initialization" and took the whole
+  // page down before the interview could even load.
   const reportViolation = useCallback(async (type) => {
     if (isPractice || terminatedRef.current) return
     if (!interviewIdRef.current || violationInFlightRef.current) return
@@ -513,6 +483,55 @@ export default function Interview() {
     streaks[type] = (streaks[type] || 0) + 1
     if (streaks[type] === VIOLATION_STREAK) reportViolation(type)
   }, [reportViolation])
+
+  // ── Screen share: notice when it stops, and help them restore it ────────────
+  useEffect(() => {
+    if (phase !== 'active' || !policy.requireScreenShare) return
+    const track = screenStreamRef.current?.getVideoTracks?.()[0]
+    if (!track) return
+    const onEnded = () => {
+      shareLostAtRef.current = Date.now()
+      setSharing(false)
+      screenStreamRef.current = null
+      reportScreen('stopped')
+      // Stopping a share the employer requires is a deliberate act — there is
+      // no accidental way to do it — so it counts as a strike straight away.
+      reportViolation('screen_share')
+    }
+    track.addEventListener('ended', onEnded)
+    return () => track.removeEventListener('ended', onEnded)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [phase, sharing, policy.requireScreenShare, interview?._id])
+
+  // ── Leaving the interview tab ─────────────────────────────────────────────
+  // Switching away is the cheapest way to look an answer up, and the one thing
+  // the camera cannot see. Timed rather than instant: a notification stealing
+  // focus for a second is not cheating, and the candidate was told the rule on
+  // the terms screen before they agreed to it.
+  useEffect(() => {
+    if (phase !== 'active' || isPractice) return
+    let awayTimer = null
+    const onVisibility = () => {
+      if (document.hidden) {
+        awayTimer = setTimeout(() => reportViolation('tab_switch'), TAB_AWAY_MS)
+      } else {
+        clearTimeout(awayTimer)
+        awayTimer = null
+      }
+    }
+    document.addEventListener('visibilitychange', onVisibility)
+    return () => {
+      clearTimeout(awayTimer)
+      document.removeEventListener('visibilitychange', onVisibility)
+    }
+  }, [phase, isPractice, reportViolation])
+
+  async function reportScreen(type, surface = '', gapSeconds = 0) {
+    if (!interview?._id || isPractice) return
+    try {
+      await api.post(`/interviews/${interview._id}/screen`, { type, surface, gapSeconds })
+    } catch { /* best-effort: never block the interview on telemetry */ }
+  }
 
   async function resumeShare() {
     try {
@@ -894,7 +913,7 @@ export default function Interview() {
     try {
       window.speechSynthesis.cancel()
       const u = new SpeechSynthesisUtterance(text)
-      u.lang = language === 'Urdu' ? 'ur-PK' : 'en-US'
+      u.lang = speechLang(language)
       u.onstart = () => setSpeaking(true)
       u.onend = done
       u.onerror = done
@@ -923,7 +942,7 @@ export default function Interview() {
     pcmChunksRef.current = []
     capturingRef.current = true
     const rec = new SpeechRecognition()
-    rec.lang = language === 'Urdu' ? 'ur-PK' : 'en-US'
+    rec.lang = speechLang(language)
     rec.continuous = true
     rec.interimResults = true
     let finalText = answer ? answer + ' ' : ''
@@ -1007,38 +1026,12 @@ export default function Interview() {
     if (answerRef.current.trim() && !submittingRef.current) submit()
   }
 
-  // ── The candidate asks something mid-interview ──────────────────────────────
-  const sendAsk = async () => {
-    const text = askText.trim()
-    if (!text || asking) return
-    setAsking(true)
-    stopSpeaking()
-    setEntries((e) => [...e, { side: 'candidate', kind: 'aside', text }])
-    setAskText('')
-    setAskOpen(false)
-    try {
-      const res = await api.post(`/interviews/${interview._id}/ask`, { text })
-      setEntries((e) => [
-        ...e,
-        { side: 'ai', kind: 'reply', text: res.reply, meta: { intent: res.intent } },
-      ])
-      // A reported blocker is what unlocks typing on a job that forbids it.
-      // The employer still sees it was used — see the answer's `hardship` flag.
-      if (res.intent === 'issue' && !policy.allowTextAnswers) setHardship(true)
-    } catch (err) {
-      setEntries((e) => [
-        ...e,
-        {
-          side: 'ai',
-          kind: 'reply',
-          text: err.message || "I couldn't process that just now — please carry on with your answer.",
-          meta: {},
-        },
-      ])
-    } finally {
-      setAsking(false)
-    }
-  }
+  // The old "Ask a question" box is gone: you interrupt an interviewer by
+  // speaking, not by typing into a side panel. Whatever the candidate says goes
+  // through /answer, which classifies it as an answer, a question or a reported
+  // problem and replies accordingly — so asking is handled by the same path as
+  // answering, exactly as it is with a person. The /ask endpoint remains on the
+  // server for the typed-answer path.
 
   // ── Submit the current answer ───────────────────────────────────────────────
   const submit = async () => {
@@ -1522,7 +1515,7 @@ export default function Interview() {
           <div className="flex flex-col rounded-xl border border-ink-200 bg-white shadow-sm">
             {/* The conversation so far. Scrolls on its own so the answer box
                 never leaves the screen on a long interview. */}
-            <div className="max-h-[46vh] overflow-y-auto p-5 sm:p-6">
+            <div className="max-h-[52vh] overflow-y-auto p-4 sm:p-5">
               <Transcript entries={entries} speaking={speaking} onReplay={speak} />
             </div>
 
@@ -1559,52 +1552,26 @@ export default function Interview() {
                   </button>
                 </div>
 
-                <button
-                  onClick={() => setAskOpen((v) => !v)}
-                  className={cn(
-                    'inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-sm font-medium transition',
-                    askOpen
-                      ? 'border-brand-200 bg-brand-50 text-brand-700'
-                      : 'border-ink-200 text-ink-600 hover:bg-ink-50 hover:text-ink-900'
-                  )}
-                >
-                  {askOpen ? <X className="h-4 w-4" /> : <HelpCircle className="h-4 w-4" />}
-                  {askOpen ? 'Cancel' : 'Ask a question'}
-                </button>
+                {/* The Ask button is gone on purpose. Typing a question into a
+                    box is not how you interrupt a person — you just say it, and
+                    the interviewer works out that it was a question rather than
+                    an answer. The classifier behind /answer already does exactly
+                    that, so the button was making candidates do by hand
+                    something the system handles on its own. */}
+                {mode === 'voice' && (
+                  <p className="hidden items-center gap-1.5 text-xs text-ink-400 sm:flex">
+                    <HelpCircle className="h-3.5 w-3.5" />
+                    Need something repeated? Just say so — it is never scored.
+                  </p>
+                )}
               </div>
 
-              {/* Ask the interviewer. Deliberately separate from the answer box:
-                  a candidate should never worry that asking for a repeat will
-                  be scored as their answer. */}
-              {askOpen && (
-                <div className="mt-4 rounded-xl border border-brand-200 bg-brand-50/50 p-4">
-                  <p className="text-xs leading-relaxed text-brand-800">
-                    Ask about the role or the question, or tell the interviewer
-                    something isn&apos;t working. This is never scored.
-                  </p>
-                  <div className="mt-2.5 flex gap-2">
-                    <input
-                      value={askText}
-                      onChange={(e) => setAskText(e.target.value)}
-                      onKeyDown={(e) => e.key === 'Enter' && sendAsk()}
-                      autoFocus
-                      maxLength={2000}
-                      placeholder="e.g. Could you repeat the question?"
-                      className="input-base"
-                    />
-                    <Button onClick={sendAsk} disabled={!askText.trim() || asking}>
-                      {asking ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
-                    </Button>
-                  </div>
-                </div>
-              )}
-
               {/* Answer area */}
-              <div className="mt-4">
+              <div className="mt-3">
                 {mode === 'voice' ? (
-                  <div className="space-y-3">
+                  <div className="space-y-2.5">
                     <div className={cn(
-                      'flex items-center gap-4 rounded-xl border p-4 transition',
+                      'flex items-center gap-3 rounded-xl border p-3 transition',
                       recording ? 'border-red-200 bg-red-50/50' : 'border-ink-200 bg-ink-50/50'
                     )}>
                       {/* Not a record button — the mic runs itself. This is a
@@ -1616,7 +1583,7 @@ export default function Interview() {
                         aria-label={recording ? "I'm done answering" : 'Start listening'}
                         title={recording ? "I'm done answering" : 'Start listening'}
                         className={cn(
-                          'relative flex h-12 w-12 shrink-0 items-center justify-center rounded-full text-white transition disabled:opacity-40',
+                          'relative flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-white transition disabled:opacity-40',
                           recording ? 'bg-red-600 hover:bg-red-700' : 'bg-brand-600 hover:bg-brand-700'
                         )}
                       >
@@ -1635,7 +1602,7 @@ export default function Interview() {
                           />
                         )}
                         <span className="relative">
-                          {recording ? <Square className="h-4 w-4" /> : <Mic className="h-5 w-5" />}
+                          {recording ? <Square className="h-3.5 w-3.5" /> : <Mic className="h-4 w-4" />}
                         </span>
                       </button>
                       <div className="min-w-0 flex-1">
@@ -1654,11 +1621,11 @@ export default function Interview() {
                           {!SpeechRecognition
                             ? canType
                               ? 'Switch to Type to answer instead.'
-                              : 'Use Ask to tell the interviewer about this.'
+                              : 'Tell the interviewer out loud — they will handle it.'
                             : busy
                               ? 'Give them a second.'
                               : speaking
-                                ? 'The mic opens as soon as they finish.'
+                                ? 'Start talking any time — they will stop and listen.'
                                 : sending
                                   ? 'Pausing means you are done — keep talking to carry on.'
                                   : 'Just talk. When you stop, the interviewer replies.'}
@@ -1679,17 +1646,31 @@ export default function Interview() {
                       )}
                     </div>
 
-                    {/* The transcript, editable only while nothing is in
-                        flight — it is a record of what was heard, not a form
-                        field to fill in. */}
-                    <textarea
-                      value={answer}
-                      onChange={(e) => setAnswer(e.target.value)}
-                      rows={3}
-                      disabled={recording || busy}
-                      placeholder="What you say appears here."
-                      className="input-base resize-none text-sm disabled:cursor-not-allowed disabled:bg-ink-50"
-                    />
+                    {/* What was heard, shown only once there is something to
+                        show. An always-visible empty box read as "type your
+                        answer here", which is the opposite of what this mode
+                        is — and it took up a third of the screen saying
+                        nothing. It stays editable so a misheard word can be
+                        corrected before the answer goes. */}
+                    {answer.trim() && (
+                      <div className="rounded-xl border border-ink-200 bg-white">
+                        <div className="flex items-center justify-between border-b border-ink-100 px-3 py-1.5">
+                          <span className="text-[11px] font-semibold uppercase tracking-wide text-ink-400">
+                            What we heard
+                          </span>
+                          <span className="text-[11px] text-ink-400">
+                            {answer.trim().split(/\s+/).length} words
+                          </span>
+                        </div>
+                        <textarea
+                          value={answer}
+                          onChange={(e) => setAnswer(e.target.value)}
+                          rows={2}
+                          disabled={recording || busy}
+                          className="w-full resize-none border-0 bg-transparent px-3 py-2 text-sm text-ink-700 focus:outline-none disabled:cursor-not-allowed"
+                        />
+                      </div>
+                    )}
                   </div>
                 ) : (
                   <div className="space-y-3">
@@ -1727,14 +1708,15 @@ export default function Interview() {
                 )}
               </div>
 
-              <div className="mt-5 flex flex-col-reverse items-stretch gap-3 border-t border-ink-100 pt-4 sm:flex-row sm:items-center sm:justify-between">
-                <p className="text-xs text-ink-400">
-                  {answer.trim() ? `${answer.trim().split(/\s+/).length} words` : ''}
-                </p>
-
-                {/* Voice needs no button: falling silent is what ends an
-                    answer. Typing has no silence to detect, so it keeps one. */}
-                {mode === 'text' ? (
+              {/* Voice needs no button — falling silent is what ends an answer,
+                  and its status already sits on the mic row above, so this whole
+                  bar would be a second copy of it. Typing has no silence to
+                  detect, so it keeps a Send button. */}
+              {mode === 'text' && (
+                <div className="mt-4 flex flex-col-reverse items-stretch gap-3 border-t border-ink-100 pt-4 sm:flex-row sm:items-center sm:justify-between">
+                  <p className="text-xs text-ink-400">
+                    {answer.trim() ? `${answer.trim().split(/\s+/).length} words` : ''}
+                  </p>
                   <Button
                     size="lg"
                     onClick={submit}
@@ -1752,24 +1734,17 @@ export default function Interview() {
                       <>Send <ChevronRight className="h-4 w-4" /></>
                     )}
                   </Button>
-                ) : (
-                  <p className="flex items-center gap-2 text-xs font-medium text-ink-500">
-                    {busy ? (
-                      <>
-                        <Loader2 className="h-3.5 w-3.5 animate-spin text-brand-600" />
-                        {last ? 'Wrapping up the interview…' : 'The interviewer is thinking…'}
-                      </>
-                    ) : (
-                      <>
-                        <CheckCircle2 className="h-3.5 w-3.5 text-emerald-600" />
-                        {last
-                          ? 'Last question — the report follows once you answer.'
-                          : 'No need to submit — just speak.'}
-                      </>
-                    )}
-                  </p>
-                )}
-              </div>
+                </div>
+              )}
+
+              {/* The one thing worth saying in voice mode that the mic row
+                  does not already say: that this is the last question. */}
+              {mode === 'voice' && last && !busy && (
+                <p className="mt-3 flex items-center gap-2 border-t border-ink-100 pt-3 text-xs font-medium text-ink-500">
+                  <CheckCircle2 className="h-3.5 w-3.5 text-emerald-600" />
+                  Last question — your report follows once you answer.
+                </p>
+              )}
             </div>
           </div>
         </div>

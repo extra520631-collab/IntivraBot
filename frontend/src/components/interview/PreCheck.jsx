@@ -21,6 +21,17 @@ import { cn } from '../../lib/cn'
  * question three has already lost the interview.
  */
 
+// ── Microphone check thresholds ─────────────────────────────────────────────
+// Below this the room is effectively quiet. The check needs to see a quiet
+// moment as well as a loud one, so a constant hum can never pass on its own.
+const MIC_QUIET_LEVEL = 8
+// Speech peaks well above room tone. Set above a fan or a hum, below a normal
+// speaking voice at arm's length from the microphone.
+const MIC_SPEECH_LEVEL = 28
+// Frames at speech level before it counts. A bang or a cough is a single
+// spike; a spoken phrase holds level across many frames (~250ms at 60fps).
+const MIC_SPEECH_FRAMES = 15
+
 const CHECK_IDLE = 'idle'
 const CHECK_BUSY = 'busy'
 const CHECK_OK = 'ok'
@@ -104,16 +115,36 @@ export default function PreCheck({
       ctx.createMediaStreamSource(stream).connect(analyser)
       const data = new Uint8Array(analyser.frequencyBinCount)
 
-      // Pass the check on hearing something, not on being handed a stream: a
-      // muted or dead mic grants permission happily and returns silence.
-      let heard = false
+      // Pass the check on hearing *speech*, not on hearing anything: a fan, a
+      // door or a cough used to satisfy this, so a candidate whose microphone
+      // was picking up the room but not their voice sailed through the check
+      // and discovered the problem mid-interview.
+      //
+      // Two conditions, both required:
+      //   1. Loud enough to be a voice rather than room tone.
+      //   2. Sustained across enough frames to be a word rather than a bang.
+      // Speech also has to actually vary — a steady hum holds a constant level,
+      // while a spoken sentence rises and falls.
+      let loudFrames = 0
+      let quietSeen = false
+      let peakSeen = 0
+
       const loop = () => {
         analyser.getByteTimeDomainData(data)
         let peak = 0
         for (const v of data) peak = Math.max(peak, Math.abs(v - 128))
         const level = Math.min(100, Math.round((peak / 128) * 220))
         setMicLevel(level)
-        if (level > 12) heard = true
+
+        if (level < MIC_QUIET_LEVEL) quietSeen = true
+        if (level >= MIC_SPEECH_LEVEL) {
+          loudFrames += 1
+          peakSeen = Math.max(peakSeen, level)
+        }
+
+        // Needs a quiet moment *and* a loud one: that difference is what tells
+        // a voice apart from a microphone sitting next to a noisy fan.
+        const heard = quietSeen && loudFrames >= MIC_SPEECH_FRAMES && peakSeen >= MIC_SPEECH_LEVEL
         setMic(heard ? CHECK_OK : CHECK_BUSY)
         rafRef.current = requestAnimationFrame(loop)
       }
@@ -385,25 +416,42 @@ function Terms({
   const [agreed, setAgreed] = useState(false)
 
   return (
-    <div className="mx-auto w-full max-w-3xl px-4 py-8 sm:px-6">
-      <div className="mb-6 text-center">
+    <div className="mx-auto w-full max-w-3xl px-4 pb-32 pt-8 sm:px-6">
+      <div className="mb-7 text-center">
         <span className="inline-flex items-center gap-1.5 rounded-full bg-brand-50 px-3 py-1 text-xs font-semibold text-brand-700">
           <FileText className="h-3.5 w-3.5" /> Terms of this interview
         </span>
-        <h1 className="mt-3 text-lg font-bold text-ink-900 sm:text-xl">
-          Please read this before you start
+        <h1 className="mt-4 text-2xl font-bold tracking-tight text-ink-900 sm:text-3xl">
+          Before you begin
         </h1>
-        <p className="mx-auto mt-2 max-w-xl text-sm leading-relaxed text-ink-500">
+        <p className="mx-auto mt-2.5 max-w-lg text-sm leading-relaxed text-ink-500">
           These are the rules your interview runs under. Nothing here is sprung
           on you later — if a rule is broken you are told at the time, in these
           same words.
         </p>
       </div>
 
+      {/* The three facts someone actually wants before agreeing to anything.
+          They were buried inside prose below; a candidate deciding whether to
+          start now gets them at a glance instead of reading to find them. */}
+      <div className="mb-6 grid grid-cols-3 gap-3">
+        <KeyFact
+          icon={MessageSquare}
+          value={totalQuestions}
+          label={totalQuestions === 1 ? 'question' : 'questions'}
+        />
+        <KeyFact
+          icon={Clock}
+          value={minutes || '∞'}
+          label={minutes ? 'minutes total' : 'no time limit'}
+        />
+        <KeyFact icon={Volume2} value={language} label="spoken aloud" />
+      </div>
+
       {/* What the interview actually is */}
-      <section className="rounded-xl border border-ink-200 bg-white p-5 shadow-sm">
-        <h2 className="text-sm font-bold text-ink-900">1. What to expect</h2>
-        <ul className="mt-3.5 space-y-3.5">
+      <section className="rounded-xl border border-ink-200 bg-white p-5 shadow-sm sm:p-6">
+        <SectionHeading n="1" title="What to expect" />
+        <ul className="mt-4 space-y-4">
           <Expect icon={Clock} title={
             minutes
               ? `${totalQuestions} questions, ${minutes} minutes in total`
@@ -433,9 +481,9 @@ function Terms({
       </section>
 
       {/* How it is scored */}
-      <section className="mt-4 rounded-xl border border-ink-200 bg-white p-5 shadow-sm">
-        <h2 className="text-sm font-bold text-ink-900">2. How you are scored</h2>
-        <ul className="mt-3.5 space-y-3.5">
+      <section className="mt-4 rounded-xl border border-ink-200 bg-white p-5 shadow-sm sm:p-6">
+        <SectionHeading n="2" title="How you are scored" />
+        <ul className="mt-4 space-y-4">
           <Expect icon={CheckCircle2} title="Every answer is scored as you go">
             You see the score and a line of feedback for each answer right after
             you give it. Your final result is the average across all
@@ -448,19 +496,53 @@ function Terms({
         </ul>
       </section>
 
-      {/* The part that can end the interview */}
-      <section className="mt-4 rounded-xl border-2 border-red-200 bg-red-50/50 p-5 shadow-sm">
-        <h2 className="flex items-center gap-2 text-sm font-bold text-red-900">
-          <ShieldAlert className="h-4 w-4" /> 3. Monitoring, warnings and termination
-        </h2>
-        <p className="mt-2 text-xs leading-relaxed text-red-800">
-          Your camera and microphone are analysed throughout to confirm it is you
-          and that you are alone. <strong>You get one warning. The second
-          time a rule is broken, your interview ends immediately</strong> and the
-          employer receives a report naming the exact rule and when it happened.
-        </p>
+      {/* The part that can end the interview. Visually the loudest thing on
+          the page: it is the only section with a consequence attached, and a
+          candidate who skims everything else must still take this in. */}
+      <section className="mt-4 overflow-hidden rounded-xl border-2 border-red-300 bg-white shadow-sm">
+        <div className="flex items-center gap-2.5 bg-red-100 px-5 py-3 sm:px-6">
+          <ShieldAlert className="h-5 w-5 shrink-0 text-red-700" />
+          <h2 className="text-sm font-bold text-red-900">
+            <span className="text-red-500">3.</span> Monitoring, warnings and termination
+          </h2>
+        </div>
 
-        <ul className="mt-3.5 space-y-3.5">
+        <div className="p-5 sm:p-6">
+          {/* The two-strike rule as a diagram, not a sentence. This is the one
+              thing on the page that costs someone their interview, and it was
+              previously a clause in the middle of a paragraph. */}
+          <div className="flex items-stretch gap-2.5">
+            <div className="flex-1 rounded-lg border border-amber-300 bg-amber-50 p-3.5">
+              <div className="flex items-center gap-2">
+                <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-amber-200 text-[11px] font-bold text-amber-900">
+                  1
+                </span>
+                <p className="text-xs font-bold text-amber-900">First breach</p>
+              </div>
+              <p className="mt-1.5 text-xs leading-relaxed text-amber-800">
+                You get one warning, on screen and spoken aloud. Fix it and carry
+                on — nothing is lost.
+              </p>
+            </div>
+            <div className="flex-1 rounded-lg border border-red-300 bg-red-50 p-3.5">
+              <div className="flex items-center gap-2">
+                <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-red-200 text-[11px] font-bold text-red-900">
+                  2
+                </span>
+                <p className="text-xs font-bold text-red-900">Second breach</p>
+              </div>
+              <p className="mt-1.5 text-xs leading-relaxed text-red-800">
+                Your interview ends immediately. The employer is told the exact
+                rule and when it happened.
+              </p>
+            </div>
+          </div>
+
+          <p className="mt-4 text-xs font-semibold uppercase tracking-wide text-red-900/60">
+            What counts as a breach
+          </p>
+
+          <ul className="mt-3 space-y-4">
           <Expect icon={Users} title="Stay alone and in frame" tone="red">
             Another person visible on camera, or you leaving the camera&apos;s
             view, is a violation. So is another voice answering, or a voice that
@@ -500,16 +582,31 @@ function Terms({
             A brief disconnection is fine — come straight back. Being gone longer
             than five minutes submits what you have answered so far.
           </Expect>
-        </ul>
+          </ul>
 
-        <p className="mt-3.5 rounded-lg bg-white/70 p-3 text-xs leading-relaxed text-red-900">
-          <strong>Fairness:</strong> a single bad camera frame never counts. A
-          rule is only recorded once the problem persists, and a frame too dark
-          or blurred to read is discarded rather than held against you.
-        </p>
+          {/* Reassurance belongs *inside* the scary section, not after it —
+              someone who has just read seven ways to fail needs to know the
+              system is not looking for excuses. */}
+          <div className="mt-5 flex gap-2.5 rounded-lg border border-emerald-200 bg-emerald-50 p-3.5">
+            <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0 text-emerald-600" />
+            <p className="text-xs leading-relaxed text-emerald-900">
+              <strong className="font-semibold">You will not be caught out by a glitch.</strong>{' '}
+              A single bad camera frame never counts. A rule is only recorded once
+              the problem genuinely persists, and a frame too dark or blurred to
+              read is discarded rather than held against you.
+            </p>
+          </div>
+        </div>
       </section>
 
-      <label className="mt-4 flex cursor-pointer items-start gap-3 rounded-xl border border-ink-200 bg-white p-4 shadow-sm transition hover:border-ink-300">
+      <label
+        className={cn(
+          'mt-4 flex cursor-pointer items-start gap-3 rounded-xl border-2 p-4 shadow-sm transition',
+          agreed
+            ? 'border-brand-300 bg-brand-50/60'
+            : 'border-ink-200 bg-white hover:border-ink-300'
+        )}
+      >
         <input
           type="checkbox"
           checked={agreed}
@@ -525,15 +622,52 @@ function Terms({
         </span>
       </label>
 
-      <div className="mt-4 flex flex-col gap-2 sm:flex-row-reverse">
-        <Button size="lg" onClick={onAccept} disabled={!agreed} className="sm:flex-1">
-          I agree — continue to device checks <ChevronRight className="h-4 w-4" />
-        </Button>
-        <Button variant="secondary" onClick={onCancel} className="sm:flex-1">
-          Not now
-        </Button>
+      {/* Pinned to the bottom of the viewport. The page is long enough that
+          both the checkbox and the button used to sit below the fold, so a
+          candidate who had finished reading had to scroll back to find out how
+          to proceed — and had no visible indication of what was blocking them. */}
+      <div className="fixed inset-x-0 bottom-0 z-20 border-t border-ink-200 bg-white/95 backdrop-blur">
+        <div className="mx-auto flex max-w-3xl flex-col-reverse gap-2 px-4 py-3 sm:flex-row sm:items-center sm:px-6">
+          <Button variant="secondary" onClick={onCancel} className="sm:w-auto">
+            Not now
+          </Button>
+          <div className="flex-1" />
+          {!agreed && (
+            <p className="text-center text-xs text-ink-400 sm:text-right">
+              Tick the box above to continue
+            </p>
+          )}
+          <Button size="lg" onClick={onAccept} disabled={!agreed}>
+            I agree — continue <ChevronRight className="h-4 w-4" />
+          </Button>
+        </div>
       </div>
     </div>
+  )
+}
+
+// The headline numbers, pulled out of the prose so they are readable in one
+// glance. These are what someone checks before committing their next 20
+// minutes, and they should never require reading a paragraph to find.
+function KeyFact({ icon: Icon, value, label }) {
+  return (
+    <div className="rounded-xl border border-ink-200 bg-white p-3.5 text-center shadow-sm">
+      <Icon className="mx-auto h-4 w-4 text-brand-600" />
+      <p className="mt-1.5 text-xl font-bold leading-none tracking-tight text-ink-900">
+        {value}
+      </p>
+      <p className="mt-1 text-[11px] font-medium text-ink-400">{label}</p>
+    </div>
+  )
+}
+
+// Numbered section title. The number sits in the brand colour so the three
+// sections read as a sequence to work through rather than three loose cards.
+function SectionHeading({ n, title }) {
+  return (
+    <h2 className="flex items-baseline gap-2 text-sm font-bold text-ink-900">
+      <span className="text-brand-600">{n}.</span> {title}
+    </h2>
   )
 }
 

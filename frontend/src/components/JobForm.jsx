@@ -191,6 +191,8 @@ export default function JobForm({
   const [questions, setQuestions] = useState(initial.customQuestions || [])
   const [questionInput, setQuestionInput] = useState('')
   const [questionCount, setQuestionCount] = useState(initial.questionCount ?? 5)
+  const [minutesPerQuestion, setMinutesPerQuestion] = useState(initial.minutesPerQuestion ?? 4)
+  const [language, setLanguage] = useState(initial.language ?? 'English')
   // How the interview is conducted. These are the employer's call, not the
   // candidate's — a candidate who could switch to typing at will would be
   // opting out of the voice check that verifies who is answering.
@@ -264,6 +266,8 @@ export default function JobForm({
         customQuestions: questions,
         // Always leave room for the warm-up plus every HR question.
         questionCount: Math.max(questionCount, questions.length + 1),
+        minutesPerQuestion,
+        language,
         allowTextAnswers,
         requireScreenShare,
         ...(showStatus ? { status: form.status } : {}),
@@ -568,10 +572,47 @@ export default function JobForm({
                 className="w-full accent-brand-600"
               />
             </div>
-            <p className="self-end text-xs text-ink-400">
-              {questions.length === 0
-                ? 'All questions will be AI-generated for this role and candidate.'
-                : `Question 1 is a warm-up, then your ${questions.length} question${questions.length === 1 ? '' : 's'}, then AI fills the rest.`}
+            <div>
+              <div className="mb-2 flex items-center justify-between">
+                <label className="label-base mb-0">Minutes per question</label>
+                <span className="text-sm font-bold text-brand-600">
+                  {minutesPerQuestion} min
+                </span>
+              </div>
+              <input
+                type="range"
+                min="1"
+                max="15"
+                value={minutesPerQuestion}
+                onChange={(e) => setMinutesPerQuestion(+e.target.value)}
+                className="w-full accent-brand-600"
+              />
+            </div>
+          </div>
+
+          {/* The number that actually matters to a candidate is the total, and
+              it is the one thing neither slider shows on its own. */}
+          <p className="mt-3 rounded-lg bg-ink-50 px-3 py-2 text-xs text-ink-600">
+            Candidates get{' '}
+            <strong className="font-semibold text-ink-900">
+              {Math.max(questionCount, questions.length + 1) * minutesPerQuestion} minutes
+            </strong>{' '}
+            in total. The limit covers the whole interview, not each answer.{' '}
+            {questions.length === 0
+              ? 'All questions will be AI-generated for this role and candidate.'
+              : `Question 1 is a warm-up, then your ${questions.length} question${questions.length === 1 ? '' : 's'}, then AI fills the rest.`}
+          </p>
+
+          <div className="mt-4">
+            <label className="label-base">Interview language</label>
+            <Select value={language} onChange={(e) => setLanguage(e.target.value)}>
+              <option value="English">English</option>
+              <option value="Roman Urdu">Roman Urdu (Urdu in English letters)</option>
+              <option value="Urdu">اردو (Urdu script)</option>
+            </Select>
+            <p className="mt-1.5 text-xs text-ink-400">
+              Questions are asked and answers expected in this language. Roman Urdu
+              suits candidates who speak Urdu but read it faster in English letters.
             </p>
           </div>
         </CardBody>

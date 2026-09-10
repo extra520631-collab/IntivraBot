@@ -46,7 +46,8 @@ const FALLBACK_Q = [
 // Long enough to survive a dropped connection, a browser crash or a phone call;
 // far too short to research an answer.
 const GRACE_MS = 5 * 60 * 1000
-// Per-question time budget. Generous for a spoken answer plus thinking time.
+// Per-question time budget when the employer has not set one. Generous for a
+// spoken answer plus thinking time; jobs override it with minutesPerQuestion.
 const SECONDS_PER_QUESTION = 240
 
 // Has the candidate been gone longer than the grace period?
@@ -255,7 +256,10 @@ export const start = asyncHandler(async (req, res) => {
     application: applicationId,
     candidate: req.user._id,
     job: job._id,
-    language: language || 'English',
+    // The employer sets the language on the job; it is not the candidate's to
+    // pick, for the same reason the answer mode isn't — an interview conducted
+    // in a language the employer can't review is not a usable assessment.
+    language: job.language || language || 'English',
     totalQuestions,
     hrQuestions,
     field: job.field || '',
@@ -265,7 +269,8 @@ export const start = asyncHandler(async (req, res) => {
     requireScreenShare: job.requireScreenShare !== false,
     // Budget the whole run up front, so a job edited mid-interview can't
     // shorten a clock the candidate is already racing.
-    timeLimitSeconds: totalQuestions * SECONDS_PER_QUESTION,
+    timeLimitSeconds:
+      totalQuestions * ((job.minutesPerQuestion || 0) * 60 || SECONDS_PER_QUESTION),
     lastSeenAt: new Date(),
     currentIndex: 0,
     questions: [],

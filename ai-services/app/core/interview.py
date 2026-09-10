@@ -18,6 +18,24 @@ _GENERIC_QUESTIONS = [
 ]
 
 
+# The opener, per language. Used when Gemini is unavailable — see next_question.
+_OPENERS = {
+    "English": (
+        "Hello, and thanks for joining. To start us off, could you tell me a "
+        "little about yourself and what you have been working on recently?"
+    ),
+    "Urdu": (
+        "السلام علیکم، انٹرویو میں شامل ہونے کا شکریہ۔ آغاز کے لیے، اپنے بارے میں "
+        "کچھ بتائیے اور یہ کہ آپ حال ہی میں کس کام پر کام کر رہے تھے؟"
+    ),
+    "Roman Urdu": (
+        "Assalam-o-Alaikum, interview mein shamil hone ka shukriya. Shuruaat ke "
+        "liye, apne baare mein kuch bataiye aur yeh ke aap recently kis cheez par "
+        "kaam kar rahe the?"
+    ),
+}
+
+
 def _skill_question(skill: str) -> str:
     return f"Can you describe your hands-on experience with {skill} and give a concrete example?"
 
@@ -35,6 +53,27 @@ def _level(years) -> str:
     if y < 6:
         return "mid/senior level — expect design trade-offs and ownership"
     return "senior level — expect architecture, mentoring and judgement at scale"
+
+
+# How each supported language is described to the model. Roman Urdu needs
+# spelling out — asked for "Roman Urdu" alone the model tends to drift into
+# Urdu script or into English, and a candidate who chose it gets neither.
+_LANGUAGE_LINES = {
+    "English": "English",
+    "Urdu": "Urdu, written in Urdu script (اردو)",
+    "Roman Urdu": (
+        "Roman Urdu — Urdu written in the Latin alphabet, the way Pakistanis "
+        "write in everyday chat (e.g. 'Aap ne is project mein kya kaam kiya?'). "
+        "Never use Urdu script, and do not switch to plain English. Ordinary "
+        "technical words (React, database, API, deploy) stay in English, exactly "
+        "as people say them"
+    ),
+}
+
+
+def _language_line(language: str | None) -> str:
+    """The instruction text for the requested language."""
+    return _LANGUAGE_LINES.get(language or "English", _LANGUAGE_LINES["English"])
 
 
 def _candidate_block(candidate: dict | None) -> str:
@@ -74,6 +113,33 @@ def next_question(
             f"Q{i+1}: {qa.get('question','')}\nA{i+1}: {qa.get('answer','')}"
             for i, qa in enumerate(previous_qa or [])
         ) or "(no previous answers yet)"
+        # No real interviewer opens with a system-design question. Warming up
+        # is not politeness — a candidate whose first words are their own
+        # background settles, and the answers that follow are worth more.
+        if number == 1:
+            stage = (
+                "This is the FIRST question, so open the interview the way a human "
+                "interviewer does. Greet them warmly by starting with a short hello, "
+                "then ask them to introduce themselves and walk you through their "
+                "background and what they have been working on.\n"
+                "It MUST be an easy, open, conversational opener. Do NOT ask anything "
+                "technical, do NOT ask about a specific technology, and do NOT ask a "
+                "problem-solving question — those come later.\n"
+            )
+        elif number == 2:
+            stage = (
+                "This is the second question. Ease into the role: ask about their "
+                "general experience with the kind of work this job involves, or what "
+                "drew them to it. Keep it light — save the deep technical probing for "
+                "later questions.\n"
+            )
+        else:
+            stage = (
+                f"This is question {number} of {total}, so the interview is under way. "
+                "Probe properly now: build on their previous answers and, if an answer "
+                "was vague, drill into it.\n"
+            )
+
         prompt = (
             f"You are an experienced {guide['label']} interviewer hiring for a '{job_title}' role.\n"
             f"Required skills: {', '.join(job_skills) or 'general'}.\n\n"
@@ -82,11 +148,14 @@ def next_question(
             f"How to ask: {guide['style']}\n"
             f"Constraint: {guide['avoid']}\n\n"
             f"Conversation so far:\n{history}\n\n"
+            f"{stage}\n"
             f"Ask ONE interview question (#{number} of {total}). "
-            f"Build on their previous answers — if an answer was vague, drill into it. "
             f"Never repeat a question already asked. "
             f"Pitch the difficulty at the candidate's level. "
-            f"Ask exactly one question, in {language}. "
+            f"Speak it aloud as a person would — plain spoken sentences, no bullet "
+            f"points, no numbered sub-parts, and no more than about 45 words. A "
+            f"question too long to hold in your head is a bad interview question.\n"
+            f"Ask exactly one question, in {_language_line(language)}. "
             f"Return ONLY the question text, no numbering or preamble."
         )
         text = gemini.generate(prompt, temperature=0.8)
@@ -96,6 +165,12 @@ def next_question(
     # Offline fallback. Alternates this field's own bank with skill-specific
     # questions, so a network engineer isn't handed developer questions just
     # because Gemini is unavailable.
+    #
+    # Question 1 is always the warm-up, matching the live path above: an
+    # interview that opens cold is a worse interview whether or not Gemini
+    # happened to be reachable.
+    if number == 1:
+        return _OPENERS.get(language or "English", _OPENERS["English"])
     idx = max(0, number - 1)
     if job_skills and idx % 2 == 1:
         skill = job_skills[(idx // 2) % len(job_skills)]
@@ -243,7 +318,7 @@ def converse(
             "itself is asking, or how the interview works mechanically.\n"
             "Never reveal the score, how answers are graded, or what a good answer would be.\n"
             "Keep the reply under 60 words, spoken plainly, no lists or markdown.\n"
-            f"Speak in {language}.\n\n"
+            f"Speak in {_language_line(language)}.\n\n"
             'Respond in strict JSON with keys: intent (one of "answer", "question", "issue", '
             '"clarification", "smalltalk"), complete (boolean — only meaningful when intent is '
             '"answer"), reply (string), answer (string — the scorable part, '

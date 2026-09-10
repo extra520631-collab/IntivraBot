@@ -57,6 +57,20 @@ const jobSchema = new Schema(
     // Asked after a warm-up; the AI fills whatever slots are left.
     customQuestions: { type: [String], default: [] },
     questionCount: { type: Number, min: 3, max: 15, default: 5 },
+    // How long a candidate gets per question. The whole-interview budget is
+    // this times questionCount, fixed when the interview starts. Employer's
+    // call because it depends on the role: a support-desk answer is a minute,
+    // a system-design answer is not.
+    minutesPerQuestion: { type: Number, min: 1, max: 15, default: 4 },
+    // The language the interview is conducted in — questions asked, replies
+    // spoken, answers expected. Roman Urdu is listed separately from Urdu on
+    // purpose: most Pakistani candidates read and write it far faster than the
+    // script, and speech recognition handles it as Urdu audio either way.
+    language: {
+      type: String,
+      enum: ['English', 'Urdu', 'Roman Urdu'],
+      default: 'English',
+    },
     // Whether candidates may type their answers instead of speaking them.
     // This is the employer's call, not the candidate's: a spoken answer is what
     // the voice biometrics verify, so letting candidates opt out at will would

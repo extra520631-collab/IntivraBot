@@ -33,6 +33,22 @@ export default class ErrorBoundary extends Component {
         <p className="mt-2 max-w-md text-sm text-ink-500">
           An unexpected error occurred. Try reloading — if it keeps happening, please contact support.
         </p>
+
+        {/* What actually broke. Without this the page says only "something went
+            wrong", which is useless to whoever has to fix it — the real error
+            was reachable only by opening the browser console, and most people
+            reporting a fault never do. Collapsed so it never dominates the
+            page, and safe to ship: it is this app's own stack, not user data. */}
+        {this.state.error && (
+          <details className="mt-5 w-full max-w-2xl text-left">
+            <summary className="cursor-pointer text-xs font-semibold text-ink-400 hover:text-ink-600">
+              Show technical details
+            </summary>
+            <pre className="mt-2 max-h-64 overflow-auto rounded-lg bg-ink-900 p-3 text-[11px] leading-relaxed text-red-300">
+              {String(this.state.error?.stack || this.state.error)}
+            </pre>
+          </details>
+        )}
         <button
           onClick={this.handleReset}
           className="mt-6 inline-flex h-11 items-center gap-2 rounded-lg bg-brand-600 px-5 text-sm font-semibold text-white transition hover:bg-brand-700"

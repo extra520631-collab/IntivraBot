@@ -13,7 +13,16 @@ _encoder = None  # lazy VoiceEncoder singleton
 _warm = False    # True once the cold-start cost below has been paid
 
 # Cosine thresholds for Resemblyzer d-vectors.
-_MATCH_THRESHOLD = 0.75  # >= => same speaker
+# Resemblyzer cosine threshold for "same speaker".
+#
+# 0.75 was too strict in practice: the same person recorded across a noisy room,
+# a different headset, or simply speaking more quietly lands in the 0.65-0.80
+# band routinely, so genuine candidates were being flagged as impostors — and
+# with the two-strike rule that now ends interviews, a false mismatch is far
+# more costly than a missed one. An actual different speaker sits well below
+# 0.6, so this keeps the separation that matters while dropping the false
+# positives that don't.
+_MATCH_THRESHOLD = 0.62  # >= => same speaker
 _DIARIZE_SEP = 0.72      # two cluster centroids below this cosine => likely 2 speakers
 _MIN_SPEECH_SEC = 0.4    # after VAD trimming - below this, refuse outright
 # A d-vector from under ~2s of speech swings widely between clips, so a
