@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import {
   Camera, Mic, MonitorUp, ShieldCheck, CheckCircle2, XCircle, Loader2,
   AlertTriangle, Clock, MessageSquare, Eye, ChevronRight, Volume2, DoorOpen,
+  ShieldAlert, FileText, Users, MonitorX, Brain, Smartphone, ScanEye,
 } from 'lucide-react'
 import Button from '../ui/Button'
 import { cn } from '../../lib/cn'
@@ -35,6 +36,10 @@ export default function PreCheck({
   onCancel,
 }) {
   const minutes = secondsLeft ? Math.round(secondsLeft / 60) : 0
+  // The terms come first, before any device is touched. A candidate should
+  // know the interview can be ended for a rule-break *before* they grant
+  // camera access, not discover it in a warning banner half way through.
+  const [accepted, setAccepted] = useState(false)
   const [camera, setCamera] = useState(CHECK_IDLE)
   const [mic, setMic] = useState(CHECK_IDLE)
   const [screen, setScreen] = useState(CHECK_IDLE)
@@ -178,6 +183,21 @@ export default function PreCheck({
       micStream: micStreamRef.current,
       screenStream: screenStreamRef.current,
     })
+  }
+
+  // ── Terms and conditions ──────────────────────────────────────────────────
+  if (!accepted) {
+    return (
+      <Terms
+        minutes={minutes}
+        totalQuestions={totalQuestions}
+        language={language}
+        requireScreenShare={requireScreenShare}
+        allowTextAnswers={allowTextAnswers}
+        onAccept={() => setAccepted(true)}
+        onCancel={onCancel}
+      />
+    )
   }
 
   return (
@@ -349,6 +369,174 @@ export default function PreCheck({
   )
 }
 
+/**
+ * The agreement the candidate reads before anything is switched on.
+ *
+ * This exists because the interview can now end itself. A system that ends
+ * someone's interview for a rule they were never told about is not a fair
+ * assessment, so every rule that can cost them is stated here, in the same
+ * words the warning and the employer's report will use — including that the
+ * first breach is a warning and the second is the end of the interview.
+ */
+function Terms({
+  minutes, totalQuestions, language, requireScreenShare, allowTextAnswers,
+  onAccept, onCancel,
+}) {
+  const [agreed, setAgreed] = useState(false)
+
+  return (
+    <div className="mx-auto w-full max-w-3xl px-4 py-8 sm:px-6">
+      <div className="mb-6 text-center">
+        <span className="inline-flex items-center gap-1.5 rounded-full bg-brand-50 px-3 py-1 text-xs font-semibold text-brand-700">
+          <FileText className="h-3.5 w-3.5" /> Terms of this interview
+        </span>
+        <h1 className="mt-3 text-lg font-bold text-ink-900 sm:text-xl">
+          Please read this before you start
+        </h1>
+        <p className="mx-auto mt-2 max-w-xl text-sm leading-relaxed text-ink-500">
+          These are the rules your interview runs under. Nothing here is sprung
+          on you later — if a rule is broken you are told at the time, in these
+          same words.
+        </p>
+      </div>
+
+      {/* What the interview actually is */}
+      <section className="rounded-xl border border-ink-200 bg-white p-5 shadow-sm">
+        <h2 className="text-sm font-bold text-ink-900">1. What to expect</h2>
+        <ul className="mt-3.5 space-y-3.5">
+          <Expect icon={Clock} title={
+            minutes
+              ? `${totalQuestions} questions, ${minutes} minutes in total`
+              : `${totalQuestions} questions, untimed`
+          }>
+            {minutes
+              ? `The ${minutes}-minute limit covers the whole interview, not each answer, and the clock is on screen throughout. When it reaches zero your answers so far are submitted and scored.`
+              : 'There is no time limit. Take a moment to think before you speak.'}
+          </Expect>
+          <Expect icon={Brain} title="A real conversation, driven by your answers">
+            An AI interviewer listens to what you say, understands it, and
+            chooses the next question from it — a vague answer gets followed up,
+            a strong one moves you on. It is not a fixed list of questions.
+          </Expect>
+          <Expect icon={Volume2} title={`Answer out loud in ${language}`}>
+            {allowTextAnswers
+              ? 'Your speech is transcribed and you can correct it before it is sent. You may switch to typing if you need to, and the employer is told you did.'
+              : 'This employer has asked for spoken answers. If something genuinely stops you speaking, tell the interviewer with the Ask button and it will be handled.'}
+          </Expect>
+          <Expect icon={MessageSquare} title="You can interrupt at any time">
+            Start speaking while the interviewer is still talking and they stop
+            to listen, exactly as a person would. Ask about the role, ask for a
+            question to be repeated, or say something isn&apos;t working — none
+            of it is ever scored against you.
+          </Expect>
+        </ul>
+      </section>
+
+      {/* How it is scored */}
+      <section className="mt-4 rounded-xl border border-ink-200 bg-white p-5 shadow-sm">
+        <h2 className="text-sm font-bold text-ink-900">2. How you are scored</h2>
+        <ul className="mt-3.5 space-y-3.5">
+          <Expect icon={CheckCircle2} title="Every answer is scored as you go">
+            You see the score and a line of feedback for each answer right after
+            you give it. Your final result is the average across all
+            {' '}{totalQuestions} questions.
+          </Expect>
+          <Expect icon={AlertTriangle} title="An unanswered question scores zero">
+            If the interview ends early — time runs out, you leave, or a rule is
+            broken — the questions you never reached still count as zero.
+          </Expect>
+        </ul>
+      </section>
+
+      {/* The part that can end the interview */}
+      <section className="mt-4 rounded-xl border-2 border-red-200 bg-red-50/50 p-5 shadow-sm">
+        <h2 className="flex items-center gap-2 text-sm font-bold text-red-900">
+          <ShieldAlert className="h-4 w-4" /> 3. Monitoring, warnings and termination
+        </h2>
+        <p className="mt-2 text-xs leading-relaxed text-red-800">
+          Your camera and microphone are analysed throughout to confirm it is you
+          and that you are alone. <strong>You get one warning. The second
+          time a rule is broken, your interview ends immediately</strong> and the
+          employer receives a report naming the exact rule and when it happened.
+        </p>
+
+        <ul className="mt-3.5 space-y-3.5">
+          <Expect icon={Users} title="Stay alone and in frame" tone="red">
+            Another person visible on camera, or you leaving the camera&apos;s
+            view, is a violation. So is another voice answering, or a voice that
+            does not match your enrolled one.
+          </Expect>
+          <Expect icon={Eye} title="It must be you, live" tone="red">
+            Your face and voice are matched against your profile, and the camera
+            is checked for a photo, a screen or a synthetic face held up in place
+            of a real one. Someone else sitting the interview for you — in person
+            or by feeding you answers off camera — ends it.
+          </Expect>
+          <Expect icon={MonitorX} title="Stay on this page" tone="red">
+            Switching to another tab or window for more than a few seconds is a
+            violation — that is where an answer would be looked up.
+            {requireScreenShare
+              ? ' Your whole screen is shared for this interview, and stopping the share is also a violation.'
+              : ''}
+          </Expect>
+          <Expect icon={Smartphone} title="No phone, notes or second screen" tone="red">
+            Your camera is checked for a phone or tablet, handwritten or printed
+            notes, an open book, and any second monitor in view. A mug, a
+            keyboard, headphones and your own interview laptop are all fine.
+          </Expect>
+          <Expect icon={ScanEye} title="Look at the screen" tone="red">
+            Spending most of the interview looking away — off to one side or
+            down at something — is treated as reading from an off-camera source.
+            Glancing away to think is normal and is not counted.
+          </Expect>
+          {requireScreenShare && (
+            <Expect icon={Camera} title="Your screen is captured periodically" tone="red">
+              A snapshot of your shared screen is saved every half-minute and
+              sent to the employer with your report. An AI assistant, search
+              results, prepared notes or a chat app on screen is a violation.
+            </Expect>
+          )}
+          <Expect icon={DoorOpen} title="Leaving for five minutes ends it" tone="red">
+            A brief disconnection is fine — come straight back. Being gone longer
+            than five minutes submits what you have answered so far.
+          </Expect>
+        </ul>
+
+        <p className="mt-3.5 rounded-lg bg-white/70 p-3 text-xs leading-relaxed text-red-900">
+          <strong>Fairness:</strong> a single bad camera frame never counts. A
+          rule is only recorded once the problem persists, and a frame too dark
+          or blurred to read is discarded rather than held against you.
+        </p>
+      </section>
+
+      <label className="mt-4 flex cursor-pointer items-start gap-3 rounded-xl border border-ink-200 bg-white p-4 shadow-sm transition hover:border-ink-300">
+        <input
+          type="checkbox"
+          checked={agreed}
+          onChange={(e) => setAgreed(e.target.checked)}
+          className="mt-0.5 h-4 w-4 shrink-0 accent-brand-600"
+        />
+        <span className="text-xs leading-relaxed text-ink-600">
+          I have read and accept these terms. I understand my camera, microphone
+          {requireScreenShare ? ' and screen' : ''} will be recorded and analysed
+          {requireScreenShare ? ', that snapshots of my shared screen will be saved and sent to the employer' : ''},
+          that the results are shared with the employer, and that a second rule
+          violation will end my interview.
+        </span>
+      </label>
+
+      <div className="mt-4 flex flex-col gap-2 sm:flex-row-reverse">
+        <Button size="lg" onClick={onAccept} disabled={!agreed} className="sm:flex-1">
+          I agree — continue to device checks <ChevronRight className="h-4 w-4" />
+        </Button>
+        <Button variant="secondary" onClick={onCancel} className="sm:flex-1">
+          Not now
+        </Button>
+      </div>
+    </div>
+  )
+}
+
 function CheckCard({
   icon: Icon, title, state, okText, failText, idleText, busyText,
   onTest, testLabel, children,
@@ -411,15 +599,25 @@ function CheckCard({
   )
 }
 
-function Expect({ icon: Icon, title, children }) {
+function Expect({ icon: Icon, title, children, tone }) {
+  const red = tone === 'red'
   return (
     <li className="flex gap-3">
-      <span className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-brand-50 text-brand-600">
+      <span
+        className={cn(
+          'mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-lg',
+          red ? 'bg-red-100 text-red-700' : 'bg-brand-50 text-brand-600'
+        )}
+      >
         <Icon className="h-3.5 w-3.5" />
       </span>
       <div className="min-w-0">
-        <p className="text-xs font-semibold text-ink-900">{title}</p>
-        <p className="mt-0.5 text-xs leading-relaxed text-ink-500">{children}</p>
+        <p className={cn('text-xs font-semibold', red ? 'text-red-900' : 'text-ink-900')}>
+          {title}
+        </p>
+        <p className={cn('mt-0.5 text-xs leading-relaxed', red ? 'text-red-800' : 'text-ink-500')}>
+          {children}
+        </p>
       </div>
     </li>
   )

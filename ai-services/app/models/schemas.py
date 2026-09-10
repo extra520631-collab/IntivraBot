@@ -161,6 +161,27 @@ class FaceAnalyzeRequest(BaseModel):
     baseline: str | None = Field(default=None, description="Base64 of the enrolment/baseline photo")
 
 
+# ── Visual proctoring (Phase 7) ──
+class ProctorFrameRequest(BaseModel):
+    frame: str = Field(..., description="Base64 (or data URL) of the webcam frame")
+    # Each check costs a Gemini Vision call, so the caller says which it needs
+    # rather than paying for all three on every frame.
+    checks: list[str] = Field(
+        default_factory=lambda: ["gaze"],
+        description="Any of: gaze, objects, liveness",
+    )
+    # This service is stateless, so the caller carries the candidate's resting
+    # head position between frames — see proctor.gaze().
+    gazeBaseline: float | None = Field(
+        default=None, description="Mean resting vertical nose offset so far"
+    )
+    gazeSamples: int = Field(default=0, description="Frames that baseline averages")
+
+
+class ProctorScreenRequest(BaseModel):
+    shot: str = Field(..., description="Base64 (or data URL) of the screen capture")
+
+
 # ── Voice biometrics (Phase 6) ──
 class VoiceAnalyzeRequest(BaseModel):
     audio: str = Field(..., description="Base64 of Int16 PCM (mono)")

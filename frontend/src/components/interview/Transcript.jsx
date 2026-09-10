@@ -65,10 +65,43 @@ function Bubble({ entry, live, speaking, onReplay }) {
             )}
             {text}
           </div>
+          {/* Every answered question keeps its own score and feedback here.
+              Previously only the most recent score was visible, in the sidebar,
+              so a candidate had no way to see how question 2 had done once
+              question 3 arrived — the marking was happening but never shown. */}
           {meta?.score != null && (
-            <p className="mt-1 pr-1 text-right text-[11px] font-medium text-ink-400">
-              Scored {meta.score}%
-            </p>
+            <div className="mt-1.5 rounded-lg border border-ink-200 bg-ink-50/70 px-3 py-2">
+              <div className="flex items-center justify-between gap-3">
+                <span className="text-[11px] font-semibold uppercase tracking-wide text-ink-400">
+                  {meta.order ? `Question ${meta.order}` : 'This answer'}
+                </span>
+                <span
+                  className={cn(
+                    'shrink-0 rounded px-1.5 py-0.5 text-[11px] font-bold tabular-nums',
+                    meta.score >= 75 ? 'bg-emerald-100 text-emerald-800'
+                    : meta.score >= 50 ? 'bg-amber-100 text-amber-800'
+                    : 'bg-red-100 text-red-800'
+                  )}
+                >
+                  {meta.score}%
+                </span>
+              </div>
+              <div className="mt-1.5 h-1 overflow-hidden rounded-full bg-ink-200">
+                <div
+                  className={cn(
+                    'h-full rounded-full transition-all',
+                    meta.score >= 75 ? 'bg-emerald-500'
+                    : meta.score >= 50 ? 'bg-amber-500' : 'bg-red-500'
+                  )}
+                  style={{ width: `${meta.score}%` }}
+                />
+              </div>
+              {meta.feedback && (
+                <p className="mt-1.5 text-left text-[11px] leading-relaxed text-ink-500">
+                  {meta.feedback}
+                </p>
+              )}
+            </div>
           )}
         </div>
       </div>

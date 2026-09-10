@@ -100,6 +100,83 @@ const voiceSampleSchema = new Schema(
   { _id: false }
 )
 
+// A proctoring rule the candidate broke, and what was done about it.
+//
+// The point of recording these individually rather than as a counter is the
+// report: an employer told only "2 violations" learns nothing, and a candidate
+// whose interview was ended deserves to know exactly which rule, and when. Each
+// one carries its own evidence so neither has to take the number on trust.
+const violationSchema = new Schema(
+  {
+    // What was detected. Kept coarse on purpose — these are the things a human
+    // reviewer would actually act on, not every noisy signal.
+    type: {
+      type: String,
+      enum: [
+        'multiple_faces',   // someone else in frame
+        'no_face',          // candidate left the camera's view
+        'face_mismatch',    // the person on camera is not the candidate
+        'multiple_voices',  // another person heard speaking
+        'voice_mismatch',   // the voice is not the candidate's
+        'screen_share',     // required share stopped or was the wrong surface
+        'tab_switch',       // left the interview page
+        // ── Phase 7: what the camera and the shared screen actually show ──
+        'phone_detected',   // a phone or tablet in shot
+        'notes_detected',   // notes, printed sheets or an open book in shot
+        'screen_detected',  // a second monitor or laptop visible to the camera
+        'spoofed_camera',   // a photo, a screen, or a deepfake instead of a person
+        'gaze_away',        // sustained reading off to one side or down
+        'offscreen_voice',  // someone speaking while the candidate is not in frame
+        'screen_cheating',  // an AI chat, search results or notes on the shared screen
+      ],
+      required: true,
+    },
+    // 1 = warned, 2 = interview ended. Mirrors what the candidate was shown, so
+    // the report can never disagree with what actually happened on screen.
+    strike: { type: Number, default: 1 },
+    // Plain-language explanation, written once here and reused verbatim by the
+    // candidate's warning and the employer's report.
+    detail: { type: String, default: '' },
+    // Seconds into the interview, so the employer can place it in the
+    // transcript rather than guessing from a wall-clock timestamp.
+    atSeconds: { type: Number, default: 0 },
+    order: { type: Number }, // question on screen at the time
+    at: { type: Date, default: Date.now },
+  },
+  { _id: false }
+)
+
+// One periodic capture of the candidate's shared screen.
+//
+// The image itself lives in Cloudinary, not here — a base64 screenshot every
+// half-minute would bloat the document past Mongo's 16MB limit on a long
+// interview. What is stored is the URL plus whatever the vision check made of
+// it, so HR's report can show the timeline without re-analysing anything.
+const screenshotSchema = new Schema(
+  {
+    url: { type: String, required: true },
+    publicId: { type: String, default: '' }, // for deletion when the record goes
+    order: { type: Number },                 // question on screen at the time
+    atSeconds: { type: Number, default: 0 }, // seconds into the interview
+    // What the vision check found, if it ran. Empty means "nothing of concern"
+    // — distinct from `analyzed: false`, which means it was never looked at.
+    analyzed: { type: Boolean, default: false },
+    findings: {
+      type: [
+        {
+          _id: false,
+          type: { type: String },
+          confidence: { type: Number },
+          note: { type: String },
+        },
+      ],
+      default: [],
+    },
+    at: { type: Date, default: Date.now },
+  },
+  { _id: false }
+)
+
 const interviewSchema = new Schema(
   {
     // Practice runs have no application or job behind them — they are started
@@ -157,6 +234,32 @@ const interviewSchema = new Schema(
     voiceMatchScore: { type: Number, min: 0, max: 100, default: null },
     voiceFlags: { type: Number, default: 0 }, // clips with speaker mismatch or multiple voices
 
+    // ── Proctoring: warn once, then end ──────────────────────────────────
+    // Before this, cheating was only ever tallied silently at the end, so a
+    // candidate with a second person in the room finished the whole interview
+    // and found out afterwards. One warning is fair — a camera glitch or
+    // someone walking past is not cheating. A second is a decision.
+    violations: { type: [violationSchema], default: [] },
+    // Periodic captures of the shared screen (see screenshotSchema).
+    screenshots: { type: [screenshotSchema], default: [] },
+    // Running tally of frames where the candidate was looking away. Kept as a
+    // count rather than a per-frame array: at one sample every few seconds this
+    // would otherwise be the largest thing in the document, and the report only
+    // ever shows the proportion.
+    gazeAwayFrames: { type: Number, default: 0 },
+    gazeTotalFrames: { type: Number, default: 0 },
+    // This candidate's own resting head position, learned over the first few
+    // forward-facing frames. Where the nose sits relative to the eye line
+    // differs by face and by camera angle, so "looking down" can only be judged
+    // against the person's own neutral — a fixed threshold flags everyone.
+    // Stored as a running sum plus a count so it can be updated atomically
+    // alongside the counters above.
+    gazeBaselineSum: { type: Number, default: 0 },
+    gazeBaselineCount: { type: Number, default: 0 },
+    // Set when the interview was ended by the second strike, so the report can
+    // lead with the rule that was broken rather than the score.
+    terminatedFor: { type: String, default: '' },
+
     status: { type: String, enum: ['in_progress', 'completed'], default: 'in_progress', index: true },
 
     // ── Session integrity ────────────────────────────────────────────────
@@ -183,7 +286,7 @@ const interviewSchema = new Schema(
     // time, rather than answering the last question.
     endedReason: {
       type: String,
-      enum: ['', 'completed', 'abandoned', 'timeout'],
+      enum: ['', 'completed', 'abandoned', 'timeout', 'violation'],
       default: '',
     },
 

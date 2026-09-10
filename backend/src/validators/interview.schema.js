@@ -25,6 +25,41 @@ export const askSchema = z.object({
   text: z.string().trim().min(1, 'Say something first').max(2000),
 })
 
+// A proctoring rule the candidate's page detected being broken. The server
+// decides the strike and whether the interview ends — see the controller.
+export const violationSchema = z.object({
+  type: z.enum([
+    'multiple_faces',
+    'no_face',
+    'face_mismatch',
+    'multiple_voices',
+    'voice_mismatch',
+    'screen_share',
+    'tab_switch',
+    'phone_detected',
+    'notes_detected',
+    'screen_detected',
+    'spoofed_camera',
+    'gaze_away',
+    'offscreen_voice',
+    'screen_cheating',
+  ]),
+  order: z.number().int().min(1).max(100).optional(),
+})
+
+// Deeper (and costlier) checks over one webcam frame — see the controller.
+export const proctorSchema = z.object({
+  frame: z.string().min(1, 'No frame provided'),
+  checks: z.array(z.enum(['gaze', 'objects', 'liveness'])).max(3).optional(),
+})
+
+// One periodic capture of the shared screen. `analyze` is opt-in because each
+// analysed shot costs a vision call.
+export const screenshotSchema = z.object({
+  shot: z.string().min(1, 'No screenshot provided'),
+  analyze: z.boolean().optional(),
+})
+
 export const screenSchema = z.object({
   type: z.enum(['started', 'stopped', 'wrong_surface']),
   surface: z.string().trim().max(40).optional(),

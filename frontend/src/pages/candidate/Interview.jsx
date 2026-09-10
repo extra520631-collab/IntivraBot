@@ -3,7 +3,7 @@ import { useNavigate, useLocation, Link } from 'react-router-dom'
 import {
   ScanFace, Mic, Video, Type, ShieldCheck, AlertTriangle, MonitorUp,
   ChevronRight, Loader2, CheckCircle2, XCircle, Square, Smile, Sparkles,
-  HelpCircle, Send, X, Clock,
+  HelpCircle, Send, X, Clock, ShieldAlert,
 } from 'lucide-react'
 import Logo from '../../components/ui/Logo'
 import Button from '../../components/ui/Button'
@@ -40,6 +40,42 @@ const HISTORY_LEN = 5
 // Long enough to think mid-sentence, short enough that the conversation keeps
 // moving — and the countdown is shown, with a way to cancel it.
 const SILENCE_MS = 2500
+
+// ── Proctoring thresholds ───────────────────────────────────────────────────
+// A violation is reported only when a problem *persists*. At one frame every
+// four seconds, a single bad reading is someone walking past the door, a hand
+// in front of the lens, or the detector having a bad moment — ending an
+// interview on that would fail honest candidates constantly. Requiring the same
+// problem across consecutive reliable frames is what makes the two-strike rule
+// defensible enough to act on.
+const VIOLATION_STREAK = 3 // consecutive bad frames (~12s) before it counts
+// How long the candidate may be off the interview tab before it is reported.
+// Long enough to dismiss a notification, short enough to catch looking
+// something up.
+const TAB_AWAY_MS = 8000
+
+// ── Barge-in ────────────────────────────────────────────────────────────────
+// Waveform peak (0-127 either side of centre) that counts as someone speaking
+// rather than room noise. Set above typical background hum and laptop-fan
+// level, below normal speech.
+const BARGE_IN_LEVEL = 26
+// Consecutive animation frames above that level before we believe it (~100ms).
+// One spike is a cough, a door, a keyboard; a run of them is a sentence.
+const BARGE_IN_FRAMES = 6
+
+// ── Deeper proctoring cadence ───────────────────────────────────────────────
+// Vision checks cost a Gemini call each, so they run far slower than the local
+// face check (every 4s) — often enough to catch a phone that stays out, rare
+// enough not to dominate the AI budget or the candidate's uplink.
+const PROCTOR_INTERVAL_MS = 45000
+// Gaze is local geometry and free, so it runs on its own faster cadence.
+const GAZE_INTERVAL_MS = 6000
+// How often the shared screen is captured for the employer's timeline.
+const SCREENSHOT_INTERVAL_MS = 30000
+// One in this many screenshots is also sent for vision analysis. Every shot is
+// stored for HR to look at; analysing them all would multiply the AI cost of an
+// interview several times over for very little extra catch rate.
+const SCREENSHOT_ANALYZE_EVERY = 3
 
 export default function Interview() {
   const navigate = useNavigate()
@@ -97,6 +133,17 @@ export default function Interview() {
   // Set once the candidate has declared a blocker on a job that forbids typing.
   const [hardship, setHardship] = useState(false)
 
+  // ── Proctoring warnings ───────────────────────────────────────────────────
+  // The active warning banner (strike 1), and the terminal screen (strike 2).
+  const [warning, setWarning] = useState(null) // { strike, detail, message }
+  const [terminated, setTerminated] = useState(null) // { detail, message }
+  // Consecutive bad readings per rule, so a violation is only reported once a
+  // problem has actually persisted — see VIOLATION_STREAK.
+  const streaksRef = useRef({})
+  // Guards against firing the same report twice while one is in flight.
+  const violationInFlightRef = useRef(false)
+  const terminatedRef = useRef(false)
+
   const recognitionRef = useRef(null)
   const silenceRef = useRef(null)
   // Guards rec.onend: a deliberate stop (mode switch, leaving the page) must
@@ -113,6 +160,11 @@ export default function Interview() {
   const interviewIdRef = useRef(null)
   const videoRef = useRef(null)
   const canvasRef = useRef(null)
+  // The shared screen needs its own hidden <video>/<canvas> pair: a MediaStream
+  // can only be drawn to a canvas via a video element, and the webcam already
+  // occupies the one above.
+  const screenVideoRef = useRef(null)
+  const screenCanvasRef = useRef(null)
   const frameInFlightRef = useRef(false)
   const submittingRef = useRef(false)
   const streamRef = useRef(null)
@@ -158,7 +210,12 @@ export default function Interview() {
         ;(res.interview?.questions || []).forEach((q) => {
           if (!q.answer) return
           prior.push({ side: 'ai', kind: 'question', text: q.text, meta: { source: q.source } })
-          prior.push({ side: 'candidate', kind: 'answer', text: q.answer, meta: { score: q.score } })
+          prior.push({
+            side: 'candidate',
+            kind: 'answer',
+            text: q.answer,
+            meta: { score: q.score, feedback: q.feedback, order: q.order },
+          })
         })
         if (res.currentQuestion) {
           prior.push({
@@ -203,6 +260,58 @@ export default function Interview() {
     return stopSpeaking
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [entries.length, phase, mode])
+
+  // ── Barge-in: talk over the interviewer and it stops ────────────────────────
+  //
+  // A real interviewer stops the moment you start speaking. Without this the
+  // candidate has to sit through the whole question even when they got it after
+  // four words, which is the single thing that makes a spoken interview feel
+  // like a recording rather than a conversation.
+  //
+  // Deliberately a raw level meter rather than a second SpeechRecognition: only
+  // one recogniser can hold the mic at a time, and the real one is needed the
+  // instant we cut the speech off. Watching the waveform costs nothing and
+  // leaves the recogniser free.
+  useEffect(() => {
+    if (phase !== 'active' || mode !== 'voice') return
+    if (!speaking || !audioStreamRef.current) return
+
+    let raf = null
+    let ctx = null
+    let loud = 0
+    try {
+      const Ctx = window.AudioContext || window.webkitAudioContext
+      ctx = new Ctx()
+      const analyser = ctx.createAnalyser()
+      analyser.fftSize = 512
+      ctx.createMediaStreamSource(audioStreamRef.current).connect(analyser)
+      const data = new Uint8Array(analyser.frequencyBinCount)
+
+      const tick = () => {
+        analyser.getByteTimeDomainData(data)
+        let peak = 0
+        for (const v of data) peak = Math.max(peak, Math.abs(v - 128))
+        // Sustained speech, not a cough or a door. A few consecutive loud
+        // frames (~100ms) is a person starting a sentence; one spike is noise.
+        loud = peak > BARGE_IN_LEVEL ? loud + 1 : 0
+        if (loud >= BARGE_IN_FRAMES) {
+          // They started talking: stop the interviewer mid-sentence and hand
+          // the mic straight over, exactly as interrupting a person would.
+          stopSpeaking()
+          if (phaseRef.current === 'active' && modeRef.current === 'voice') startRecording()
+          return
+        }
+        raf = requestAnimationFrame(tick)
+      }
+      tick()
+    } catch { /* no mic / blocked — barge-in simply won't be available */ }
+
+    return () => {
+      cancelAnimationFrame(raf)
+      try { ctx?.close() } catch { /* already closed */ }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [speaking, phase, mode])
 
   // Stop any recording / speech when leaving the page.
   useEffect(() => () => { stopRecording(); stopSpeaking() }, [])
@@ -267,6 +376,17 @@ export default function Interview() {
     videoRef.current.play().catch(() => {})
   }, [phase])
 
+  // Feed the shared screen into its off-screen video element so screenshots
+  // can be drawn from it. Re-runs whenever the share is (re)established.
+  useEffect(() => {
+    if (phase !== 'active' || !sharing) return
+    const el = screenVideoRef.current
+    const stream = screenStreamRef.current
+    if (!el || !stream) return
+    el.srcObject = stream
+    el.play().catch(() => {})
+  }, [phase, sharing])
+
   // Release the camera and screen share when leaving the page.
   useEffect(() => () => {
     streamRef.current?.getTracks().forEach((t) => t.stop())
@@ -285,11 +405,37 @@ export default function Interview() {
       setSharing(false)
       screenStreamRef.current = null
       reportScreen('stopped')
+      // Stopping a share the employer requires is a deliberate act — there is
+      // no accidental way to do it — so it counts as a strike straight away.
+      reportViolation('screen_share')
     }
     track.addEventListener('ended', onEnded)
     return () => track.removeEventListener('ended', onEnded)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [phase, sharing, policy.requireScreenShare, interview?._id])
+
+  // ── Leaving the interview tab ─────────────────────────────────────────────
+  // Switching away is the cheapest way to look an answer up, and the one thing
+  // the camera cannot see. Timed rather than instant: a notification stealing
+  // focus for a second is not cheating, and the candidate was told the rule on
+  // the terms screen before they agreed to it.
+  useEffect(() => {
+    if (phase !== 'active' || isPractice) return
+    let awayTimer = null
+    const onVisibility = () => {
+      if (document.hidden) {
+        awayTimer = setTimeout(() => reportViolation('tab_switch'), TAB_AWAY_MS)
+      } else {
+        clearTimeout(awayTimer)
+        awayTimer = null
+      }
+    }
+    document.addEventListener('visibilitychange', onVisibility)
+    return () => {
+      clearTimeout(awayTimer)
+      document.removeEventListener('visibilitychange', onVisibility)
+    }
+  }, [phase, isPractice, reportViolation])
 
   async function reportScreen(type, surface = '', gapSeconds = 0) {
     if (!interview?._id || isPractice) return
@@ -297,6 +443,76 @@ export default function Interview() {
       await api.post(`/interviews/${interview._id}/screen`, { type, surface, gapSeconds })
     } catch { /* best-effort: never block the interview on telemetry */ }
   }
+
+  // ── Report a broken rule and act on what the server decides ───────────────
+  //
+  // The client detects, the server judges. Strike counting lives on the server
+  // precisely because this file is the thing being policed — all this does is
+  // show the candidate the outcome.
+  const reportViolation = useCallback(async (type) => {
+    if (isPractice || terminatedRef.current) return
+    if (!interviewIdRef.current || violationInFlightRef.current) return
+    violationInFlightRef.current = true
+    try {
+      const res = await api.post(`/interviews/${interviewIdRef.current}/violation`, { type })
+      if (res.duplicate || res.ignored) return
+
+      if (res.terminated) {
+        terminatedRef.current = true
+        // Cut everything off immediately: the interview is over, and leaving
+        // the mic open would keep transcribing into a dead session.
+        stopRecording()
+        stopSpeaking()
+        streamRef.current?.getTracks().forEach((t) => t.stop())
+        streamRef.current = null
+        screenStreamRef.current?.getTracks().forEach((t) => t.stop())
+        screenStreamRef.current = null
+        setTerminated({ detail: res.detail, message: res.message })
+        setPhase('terminated')
+        return
+      }
+
+      // Strike one. Spoken as well as shown — a candidate looking at their
+      // notes rather than the screen is exactly the person who needs to hear
+      // this, and they get only one.
+      setWarning({ strike: res.strike, detail: res.detail, message: res.message })
+      speak(`Warning. ${res.detail} If this happens again, your interview will end.`)
+    } catch { /* never let a failed report break the interview itself */ }
+    finally { violationInFlightRef.current = false }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isPractice])
+
+  // Apply a warning the *server* decided on. The vision checks run server-side
+  // and detect their own violations, so their responses can carry a warning
+  // that this page never asked for — it still has to be shown, and a
+  // termination still has to end the interview here.
+  const applyServerWarning = useCallback((w) => {
+    if (!w || terminatedRef.current) return
+    if (w.terminated) {
+      terminatedRef.current = true
+      stopRecording()
+      stopSpeaking()
+      streamRef.current?.getTracks().forEach((t) => t.stop())
+      streamRef.current = null
+      screenStreamRef.current?.getTracks().forEach((t) => t.stop())
+      screenStreamRef.current = null
+      setTerminated({ detail: w.detail, message: w.message })
+      setPhase('terminated')
+      return
+    }
+    setWarning({ strike: w.strike, detail: w.detail, message: w.message })
+    speak(`Warning. ${w.detail} If this happens again, your interview will end.`)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  // Count consecutive bad readings for one rule; report only once the problem
+  // has persisted. `ok` resets the run, so an intermittent blip never adds up.
+  const trackViolation = useCallback((type, bad) => {
+    const streaks = streaksRef.current
+    if (!bad) { streaks[type] = 0; return }
+    streaks[type] = (streaks[type] || 0) + 1
+    if (streaks[type] === VIOLATION_STREAK) reportViolation(type)
+  }, [reportViolation])
 
   async function resumeShare() {
     try {
@@ -344,29 +560,52 @@ export default function Interview() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [camOn, phase, faceEnabled, interview?._id])
 
-  async function captureFrame() {
+  // Grab one webcam still as a JPEG data URL, or null when there is nothing
+  // usable to grab. Shared by the face check and the vision proctor so both
+  // see the same picture and neither duplicates the canvas dance.
+  function grabFrame(maxEdge = 640, quality = 0.8) {
     const video = videoRef.current
     const canvas = canvasRef.current
-    if (!video || !canvas || !video.videoWidth) return
-    // Skip while the tab is hidden: the browser throttles or freezes the video
-    // element, so the frame would be stale or black and read as "no face".
-    if (typeof document !== 'undefined' && document.hidden) return
-    // Pause while an answer is being scored, so monitoring doesn't compete
-    // with it for the AI service.
-    if (submittingRef.current) return
-    if (frameInFlightRef.current) return
-    frameInFlightRef.current = true
+    if (!video || !canvas || !video.videoWidth) return null
+    // A hidden tab freezes the video element, so the frame would be stale or
+    // black — and read as "no face" by everything downstream.
+    if (typeof document !== 'undefined' && document.hidden) return null
 
-    // Downscale the long edge to 640px: past that the detector gains nothing
-    // and every extra pixel is upload time on a candidate's connection.
-    const scale = Math.min(1, 640 / Math.max(video.videoWidth, video.videoHeight))
+    const scale = Math.min(1, maxEdge / Math.max(video.videoWidth, video.videoHeight))
     canvas.width = Math.round(video.videoWidth * scale)
     canvas.height = Math.round(video.videoHeight * scale)
     const ctx = canvas.getContext('2d')
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
-    // 0.8 rather than 0.6: JPEG artefacts at low quality blur exactly the
-    // fine detail around the eyes and mouth the emotion model reads.
-    const dataUrl = canvas.toDataURL('image/jpeg', 0.8)
+    return canvas.toDataURL('image/jpeg', quality)
+  }
+
+  // Grab one still of the shared screen. Kept wider than a webcam frame
+  // because the point is to read what is on it — small text at 640px is
+  // illegible to a reviewer and to the vision model alike.
+  function grabScreen() {
+    const stream = screenStreamRef.current
+    const track = stream?.getVideoTracks?.()[0]
+    if (!track || track.readyState !== 'live') return null
+    const video = screenVideoRef.current
+    const canvas = screenCanvasRef.current
+    if (!video || !canvas || !video.videoWidth) return null
+
+    const scale = Math.min(1, 1280 / Math.max(video.videoWidth, video.videoHeight))
+    canvas.width = Math.round(video.videoWidth * scale)
+    canvas.height = Math.round(video.videoHeight * scale)
+    const ctx = canvas.getContext('2d')
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
+    return canvas.toDataURL('image/jpeg', 0.7)
+  }
+
+  async function captureFrame() {
+    // Pause while an answer is being scored, so monitoring doesn't compete
+    // with it for the AI service.
+    if (submittingRef.current) return
+    if (frameInFlightRef.current) return
+    const dataUrl = grabFrame()
+    if (!dataUrl) return
+    frameInFlightRef.current = true
 
     try {
       const res = await api.post(`/interviews/${interview._id}/frame`, {
@@ -382,10 +621,102 @@ export default function Interview() {
           confidence: res.emotion?.confidence ?? null,
           at: Date.now(),
         }])
+
+        // Judge the rules only on frames the detector could actually read. A
+        // dark or blurred frame says something about the webcam, not about the
+        // candidate, and must never cost them a strike — so it neither counts
+        // against them nor resets a genuine streak.
+        if (res.quality?.usable !== false) {
+          trackViolation('multiple_faces', res.faceCount > 1)
+          trackViolation('no_face', res.faceCount === 0)
+          // Only when there is a baseline to compare against — no profile photo
+          // means "unknown", not "impostor".
+          trackViolation('face_mismatch', res.baselineAvailable && res.match?.matched === false)
+        }
       }
     } catch { /* face monitoring is best-effort — never block the interview */ }
     finally { frameInFlightRef.current = false }
   }
+
+  // ── Deeper proctoring: gaze, objects in shot, liveness ──────────────────────
+  //
+  // Two cadences, because the checks cost wildly different amounts. Gaze is
+  // local landmark geometry and effectively free, so it samples often. Object
+  // and liveness detection each cost a Gemini Vision call, so they run rarely —
+  // a phone being used to look something up stays out for far longer than 45
+  // seconds, so a slow cadence still catches it.
+  useEffect(() => {
+    if (phase !== 'active' || !camOn || !interview?._id || isPractice) return
+
+    let stopped = false
+    let gazeTimer
+    let visionTimer
+
+    const run = async (checks) => {
+      if (stopped || terminatedRef.current) return
+      const shot = grabFrame()
+      if (!shot) return
+      try {
+        const res = await api.post(`/interviews/${interview._id}/proctor`, {
+          frame: shot,
+          checks,
+        })
+        if (res.warning) applyServerWarning(res.warning)
+      } catch { /* proctoring is best-effort — never block the interview */ }
+    }
+
+    const gazeTick = async () => {
+      await run(['gaze'])
+      if (!stopped) gazeTimer = setTimeout(gazeTick, GAZE_INTERVAL_MS)
+    }
+    const visionTick = async () => {
+      await run(['objects', 'liveness'])
+      if (!stopped) visionTimer = setTimeout(visionTick, PROCTOR_INTERVAL_MS)
+    }
+
+    // Stagger the two so they never fire in the same tick and compete for the
+    // canvas or the AI service.
+    gazeTimer = setTimeout(gazeTick, 4000)
+    visionTimer = setTimeout(visionTick, 12000)
+
+    return () => { stopped = true; clearTimeout(gazeTimer); clearTimeout(visionTimer) }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [camOn, phase, interview?._id, isPractice])
+
+  // ── Screen capture for the employer's timeline ──────────────────────────────
+  //
+  // Every capture is stored so HR can scrub through what was on screen; only
+  // every third is sent for analysis, because storage is cheap and vision calls
+  // are not. Reuses the share the candidate already granted — no second prompt.
+  useEffect(() => {
+    if (phase !== 'active' || !sharing || !interview?._id || isPractice) return
+
+    let stopped = false
+    let timer
+    let count = 0
+
+    const tick = async () => {
+      if (stopped || terminatedRef.current) return
+      const shot = grabScreen()
+      if (shot) {
+        count += 1
+        try {
+          const res = await api.post(`/interviews/${interview._id}/screenshot`, {
+            shot,
+            analyze: count % SCREENSHOT_ANALYZE_EVERY === 1,
+          })
+          if (res.warning) applyServerWarning(res.warning)
+        } catch { /* best-effort */ }
+      }
+      if (!stopped) timer = setTimeout(tick, SCREENSHOT_INTERVAL_MS)
+    }
+    // Let the first question start before the first capture — a screenshot of
+    // the interview loading tells an employer nothing.
+    timer = setTimeout(tick, 15000)
+
+    return () => { stopped = true; clearTimeout(timer) }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sharing, phase, interview?._id, isPractice])
 
   // ── Audio capture for voice biometrics ──────────────────────────────────────
   useEffect(() => {
@@ -468,7 +799,21 @@ export default function Interview() {
       const res = await api.post(`/interviews/${interview._id}/voice`, {
         audio: int16ToBase64(pcm16), sampleRate: 16000,
       })
-      if (res.ok) setLiveVoice(res)
+      if (res.ok) {
+        setLiveVoice(res)
+        // Unlike frames there is only one clip per answer, so there is no
+        // streak to build — a clip with two people audible, or one that is
+        // demonstrably not the enrolled speaker, is reported on its own. The
+        // reference clip itself is never judged: it is what defines the match.
+        if (!res.isReference) {
+          if (res.multiVoice) reportViolation('multiple_voices')
+          else if (res.match?.matched === false) reportViolation('voice_mismatch')
+        }
+        // The server pairs this clip against the frames captured while it was
+        // recorded, so it can spot a voice with nobody in shot — something
+        // neither check can see alone.
+        if (res.warning) applyServerWarning(res.warning)
+      }
     } catch { /* voice check is best-effort */ }
   }
 
@@ -757,7 +1102,13 @@ export default function Interview() {
       setEntries((e) => {
         const next = [...e]
         const mine = next[next.length - 1]
-        if (mine?.side === 'candidate') mine.meta = { score: res.score }
+        // Score *and* feedback on the bubble itself. The sidebar only ever
+        // showed the most recent one, so by the end a candidate could not see
+        // how any earlier answer had done — the scoring existed but was
+        // invisible past the next question.
+        if (mine?.side === 'candidate') {
+          mine.meta = { score: res.score, feedback: res.feedback, order: current?.order }
+        }
         // An aside answered alongside the answer.
         if (res.reply) next.push({ side: 'ai', kind: 'reply', text: res.reply, meta: {} })
         if (res.nextQuestion) {
@@ -861,6 +1212,39 @@ export default function Interview() {
           <p className="mt-1 text-sm text-ink-500">
             Reviewing every answer and building your report. This takes a few seconds.
           </p>
+        </div>
+      </FullScreen>
+    )
+  }
+
+  // Strike two. The interview is already scored and closed on the server, so
+  // this is a statement of what happened, not a screen they can retry from.
+  if (phase === 'terminated') {
+    return (
+      <FullScreen>
+        <div className="max-w-md text-center">
+          <span className="mx-auto flex h-12 w-12 items-center justify-center rounded-full bg-red-50 text-red-600">
+            <ShieldAlert className="h-6 w-6" />
+          </span>
+          <h2 className="mt-4 text-lg font-semibold text-ink-900">
+            Your interview has been ended
+          </h2>
+          <p className="mt-1.5 text-sm leading-relaxed text-ink-500">
+            {terminated?.detail}
+          </p>
+          <p className="mt-3 rounded-lg bg-red-50 p-3 text-left text-xs leading-relaxed text-red-800">
+            You were given one warning before this. The employer receives a report
+            that states exactly which rule was broken and when, along with your
+            answers up to this point.
+          </p>
+          <div className="mt-5 flex flex-col gap-2 sm:flex-row sm:justify-center">
+            <Button as={Link} to="/candidate/results">
+              View my report
+            </Button>
+            <Button as={Link} to="/candidate/applications" variant="secondary">
+              Go to my applications
+            </Button>
+          </div>
         </div>
       </FullScreen>
     )
@@ -991,6 +1375,33 @@ export default function Interview() {
         </div>
       </header>
 
+      {/* Strike one. Deliberately loud and not auto-dismissed: this is the only
+          warning the candidate gets, and the next detection ends the interview.
+          Dismissing is their acknowledgement, not a way to make it go away. */}
+      {warning && (
+        <div className="border-b-2 border-red-300 bg-red-50">
+          <div className="mx-auto flex max-w-6xl items-start gap-3 px-4 py-3.5 sm:px-6">
+            <ShieldAlert className="mt-0.5 h-5 w-5 shrink-0 text-red-600" />
+            <div className="min-w-0 flex-1">
+              <p className="text-sm font-bold text-red-900">
+                Warning {warning.strike} of 2 — {warning.detail}
+              </p>
+              <p className="mt-0.5 text-xs leading-relaxed text-red-800">
+                This is your only warning. If this happens again your interview
+                will end automatically and the employer will be told why. Fix it
+                now and carry on.
+              </p>
+            </div>
+            <button
+              onClick={() => setWarning(null)}
+              className="shrink-0 rounded-lg border border-red-300 bg-white px-3 py-1.5 text-xs font-semibold text-red-700 transition hover:bg-red-50"
+            >
+              I understand
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Screen share dropped — this blocks progress, so it sits above
           everything rather than in the sidebar where it could be missed. */}
       {shareBroken && (
@@ -1085,6 +1496,9 @@ export default function Interview() {
             </div>
           </div>
           <canvas ref={canvasRef} className="hidden" />
+          {/* Off-screen pair used only to grab stills of the shared screen. */}
+          <video ref={screenVideoRef} muted playsInline className="hidden" />
+          <canvas ref={screenCanvasRef} className="hidden" />
 
           {/* Score of the previous answer */}
           {lastResult && (

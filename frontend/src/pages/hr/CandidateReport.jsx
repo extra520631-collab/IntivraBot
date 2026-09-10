@@ -3,7 +3,9 @@ import { useParams, Link } from 'react-router-dom'
 import {
   ArrowLeft, Check, AlertTriangle, Download, ScanFace, Mic, Type, MonitorUp,
   MessageSquare, TrendingUp, TrendingDown, Clock, FileText, ExternalLink, Loader2,
+  ShieldAlert, Eye,
 } from 'lucide-react'
+import { cn } from '../../lib/cn'
 import { Card, CardHeader, CardBody } from '../../components/ui/Card'
 import { Ring } from '../../components/ui/Progress'
 import Progress from '../../components/ui/Progress'
@@ -110,6 +112,26 @@ function Report({ application, interview }) {
   const voiceMatch = interview?.voiceMatchScore
   const voiceFlags = interview?.voiceFlags ?? 0
 
+  // Proctoring violations. `endedReason === 'violation'` means the interview
+  // was cut short by the second strike, so the score below covers only the
+  // questions reached before that — which the banner has to say, or the number
+  // reads as an ordinary weak interview.
+  const violations = interview?.violations || []
+  const terminated = interview?.endedReason === 'violation'
+  const endedReason = interview?.endedReason || ''
+
+  // Periodic captures of the shared screen, and what the vision check made of
+  // them. Shown as a timeline so HR can see the screen at any point rather
+  // than taking a flag's word for it.
+  const screenshots = interview?.screenshots || []
+  const flaggedShots = screenshots.filter((s) => (s.findings || []).length > 0)
+
+  // Gaze: reported as a proportion, never as a raw count — "38 frames looking
+  // away" means nothing without knowing how many there were in total.
+  const gazeTotal = interview?.gazeTotalFrames ?? 0
+  const gazeAway = interview?.gazeAwayFrames ?? 0
+  const gazeAwayPct = gazeTotal >= 10 ? Math.round((gazeAway / gazeTotal) * 100) : null
+
   // Screen share
   const screenFlags = interview?.screenFlags ?? 0
   const screenRequired = interview?.requireScreenShare === true
@@ -141,6 +163,85 @@ function Report({ application, interview }) {
       <Link to="/hr/applications" className="inline-flex items-center gap-1 text-sm font-medium text-ink-500 hover:text-ink-900">
         <ArrowLeft className="h-4 w-4" /> Back to applications
       </Link>
+
+      {/* Why the interview ended, when it did not end normally. Placed above
+          the scores on purpose: an interview terminated for a rule-break is a
+          different thing from a low score, and reading the number first would
+          give exactly the wrong impression. */}
+      {(terminated || violations.length > 0) && (
+        <div
+          className={cn(
+            'rounded-xl border-2 p-5',
+            terminated ? 'border-red-300 bg-red-50' : 'border-amber-300 bg-amber-50'
+          )}
+        >
+          <div className="flex items-start gap-3">
+            <ShieldAlert
+              className={cn('mt-0.5 h-5 w-5 shrink-0', terminated ? 'text-red-600' : 'text-amber-600')}
+            />
+            <div className="min-w-0 flex-1">
+              <h2 className={cn('text-sm font-bold', terminated ? 'text-red-900' : 'text-amber-900')}>
+                {terminated
+                  ? 'This interview was ended automatically for a verification violation'
+                  : `${violations.length} verification warning${violations.length === 1 ? '' : 's'} were issued during this interview`}
+              </h2>
+              <p className={cn('mt-1 text-xs leading-relaxed', terminated ? 'text-red-800' : 'text-amber-800')}>
+                {terminated
+                  ? <>
+                      <strong>Reason: {interview.terminatedFor}</strong>{' '}
+                      The candidate was warned once, the same problem or another
+                      rule was detected again, and the interview was closed at that
+                      point. The scores below cover only the questions they reached.
+                    </>
+                  : 'The candidate was warned but corrected the problem, so the interview ran to the end. Listed for your judgement — it did not change the score.'}
+              </p>
+
+              {/* Each incident, in order, with the exact rule and when it
+                  happened — so this is reviewable rather than just asserted. */}
+              <ol className="mt-3 space-y-2">
+                {violations.map((v, i) => (
+                  <li
+                    key={i}
+                    className="flex items-start gap-2.5 rounded-lg bg-white/70 px-3 py-2 text-xs"
+                  >
+                    <span
+                      className={cn(
+                        'mt-px shrink-0 rounded px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide',
+                        v.strike >= 2 ? 'bg-red-200 text-red-900' : 'bg-amber-200 text-amber-900'
+                      )}
+                    >
+                      {v.strike >= 2 ? 'Ended' : `Warning ${v.strike}`}
+                    </span>
+                    <span className="min-w-0 flex-1 text-ink-700">
+                      {v.detail}
+                      <span className="ml-1 text-ink-400">
+                        (question {v.order || '—'}
+                        {v.atSeconds != null
+                          ? `, ${Math.floor(v.atSeconds / 60)}m ${v.atSeconds % 60}s in`
+                          : ''}
+                        )
+                      </span>
+                    </span>
+                  </li>
+                ))}
+              </ol>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* The other two ways an interview can end short of the last question.
+          Same reasoning: a partial score needs its explanation next to it. */}
+      {(endedReason === 'abandoned' || endedReason === 'timeout') && (
+        <div className="rounded-xl border border-amber-200 bg-amber-50 p-4">
+          <p className="flex items-start gap-2 text-xs leading-relaxed text-amber-900">
+            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />
+            {endedReason === 'timeout'
+              ? 'This interview ran out of time before the last question. Unanswered questions counted as zero.'
+              : 'The candidate left this interview and did not return within five minutes, so it was submitted automatically. Unanswered questions counted as zero.'}
+          </p>
+        </div>
+      )}
 
       {/* Header */}
       <div className="card-base p-6">
@@ -408,8 +509,90 @@ function Report({ application, interview }) {
                   tone={screenFlags === 0 ? 'ok' : 'warn'}
                 />
               )}
+              {gazeAwayPct != null && (
+                <VerifyRow
+                  icon={Eye}
+                  label="Looking at screen"
+                  value={`${100 - gazeAwayPct}% of samples`}
+                  tone={gazeAwayPct >= 55 ? 'warn' : 'ok'}
+                />
+              )}
             </CardBody>
           </Card>
+
+          {/* Screen timeline. Every capture is here, not only the flagged ones:
+              an employer judging someone on a flag deserves to see the screen
+              around it, and the clean shots are what make the flagged ones
+              mean something. */}
+          {screenshots.length > 0 && (
+            <Card>
+              <CardHeader
+                title="Shared screen"
+                subtitle={
+                  flaggedShots.length
+                    ? `${screenshots.length} captures — ${flaggedShots.length} flagged`
+                    : `${screenshots.length} captures — nothing flagged`
+                }
+              />
+              <CardBody>
+                <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+                  {screenshots.map((s, i) => {
+                    const flagged = (s.findings || []).length > 0
+                    return (
+                      <a
+                        key={i}
+                        href={s.url}
+                        target="_blank"
+                        rel="noreferrer"
+                        title={
+                          flagged
+                            ? s.findings.map((f) => `${f.type}: ${f.note}`).join('\n')
+                            : 'Open full size'
+                        }
+                        className={cn(
+                          'group relative overflow-hidden rounded-lg border-2 transition',
+                          flagged ? 'border-red-400' : 'border-ink-200 hover:border-ink-300'
+                        )}
+                      >
+                        <img
+                          src={s.url}
+                          alt={`Screen at ${s.atSeconds}s`}
+                          loading="lazy"
+                          className="aspect-video w-full object-cover object-top"
+                        />
+                        <span className="absolute bottom-0 left-0 right-0 bg-black/60 px-1.5 py-0.5 text-[10px] font-medium text-white">
+                          Q{s.order || '—'} · {Math.floor((s.atSeconds || 0) / 60)}m
+                          {String((s.atSeconds || 0) % 60).padStart(2, '0')}s
+                        </span>
+                        {flagged && (
+                          <span className="absolute right-1 top-1 rounded bg-red-600 px-1.5 py-0.5 text-[10px] font-bold text-white">
+                            {s.findings[0].type.replace('_', ' ')}
+                          </span>
+                        )}
+                      </a>
+                    )
+                  })}
+                </div>
+                {flaggedShots.length > 0 && (
+                  <ul className="mt-3 space-y-1.5 border-t border-ink-100 pt-3">
+                    {flaggedShots.map((s, i) =>
+                      s.findings.map((f, j) => (
+                        <li key={`${i}-${j}`} className="flex items-start gap-2 text-xs text-ink-600">
+                          <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-red-500" />
+                          <span>
+                            <strong>{f.type.replace('_', ' ')}</strong> at{' '}
+                            {Math.floor((s.atSeconds || 0) / 60)}m
+                            {String((s.atSeconds || 0) % 60).padStart(2, '0')}s — {f.note}{' '}
+                            <span className="text-ink-400">({f.confidence}% confidence)</span>
+                          </span>
+                        </li>
+                      ))
+                    )}
+                  </ul>
+                )}
+              </CardBody>
+            </Card>
+          )}
 
           <Card>
             <CardHeader title="HR notes" subtitle="Private to your team — the candidate never sees these" />

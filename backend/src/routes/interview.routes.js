@@ -1,8 +1,8 @@
 import { Router } from 'express'
 import { protect, restrictTo } from '../middleware/auth.js'
 import { validate } from '../middleware/validate.js'
-import { startSchema, practiceSchema, answerSchema, askSchema, screenSchema } from '../validators/interview.schema.js'
-import { start, startPractice, answer, ask, begin, screen, finish, frame, voice, myInterviews, hrSchedule, getInterview } from '../controllers/interview.controller.js'
+import { startSchema, practiceSchema, answerSchema, askSchema, screenSchema, violationSchema, proctorSchema, screenshotSchema } from '../validators/interview.schema.js'
+import { start, startPractice, answer, ask, begin, screen, finish, frame, voice, violation, proctorFrame, screenshot, myInterviews, hrSchedule, getInterview } from '../controllers/interview.controller.js'
 
 const router = Router()
 
@@ -16,6 +16,9 @@ router.post('/:id/begin', restrictTo('candidate'), begin)
 router.post('/:id/screen', restrictTo('candidate'), validate(screenSchema), screen)
 router.post('/:id/frame', restrictTo('candidate'), frame)
 router.post('/:id/voice', restrictTo('candidate'), voice)
+router.post('/:id/violation', restrictTo('candidate'), validate(violationSchema), violation)
+router.post('/:id/proctor', restrictTo('candidate'), validate(proctorSchema), proctorFrame)
+router.post('/:id/screenshot', restrictTo('candidate'), validate(screenshotSchema), screenshot)
 router.post('/:id/finish', restrictTo('candidate'), finish)
 router.get('/mine', restrictTo('candidate'), myInterviews) // must precede '/:id'
 router.get('/hr/schedule', restrictTo('hr'), hrSchedule) // must precede '/:id'

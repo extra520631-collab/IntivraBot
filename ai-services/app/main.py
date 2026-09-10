@@ -17,7 +17,7 @@ from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
 
 from app.config import settings  # noqa: E402
 from app.core import face as face_core, voice as voice_core  # noqa: E402
-from app.routers import resume, interview, face, voice  # noqa: E402
+from app.routers import resume, interview, face, voice, proctor  # noqa: E402
 
 # uvicorn only attaches handlers to its own loggers, and Railway shows nothing
 # else — so warmup timings have to go out under uvicorn's to be visible there.
@@ -67,6 +67,7 @@ app.include_router(resume.router, prefix="/api", tags=["resume"])
 app.include_router(interview.router, prefix="/api", tags=["interview"])
 app.include_router(face.router, prefix="/api", tags=["face"])
 app.include_router(voice.router, prefix="/api", tags=["voice"])
+app.include_router(proctor.router, prefix="/api", tags=["proctor"])
 
 
 @app.get("/health")

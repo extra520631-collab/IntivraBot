@@ -8,6 +8,7 @@ import { asyncHandler } from '../utils/asyncHandler.js'
 import { aiService } from '../services/aiService.js'
 import { notify } from '../services/notify.js'
 import { teamMemberIds, isTeammateOf } from '../utils/teamAccess.js'
+import { cloudinaryEnabled, uploadBuffer } from '../config/cloudinary.js'
 
 // Small in-memory cache of baseline photos (url -> base64), so we don't
 // re-download a candidate's photo from Cloudinary for every frame.
@@ -383,7 +384,9 @@ export const voice = asyncHandler(async (req, res) => {
   if (!mongoose.isValidObjectId(req.params.id)) throw new AppError(400, 'Invalid interview id')
   if (!audio) throw new AppError(400, 'No audio provided')
 
-  const interview = await Interview.findById(req.params.id).select('+voiceRef')
+  // `job` is populated because a violation detected here can terminate the
+  // interview, and closeInterview needs the job to score and notify against.
+  const interview = await Interview.findById(req.params.id).select('+voiceRef').populate('job')
   if (!interview) throw new AppError(404, 'Interview not found')
   if (String(interview.candidate) !== String(req.user._id)) throw new AppError(403, 'Not your interview')
   if (interview.status === 'completed') throw new AppError(400, 'Interview already completed')
@@ -428,6 +431,31 @@ export const voice = asyncHandler(async (req, res) => {
     }
   )
 
+  // Someone speaking while the candidate is not on camera is the classic
+  // "person off to the side feeding them answers" — and it is invisible to
+  // both checks on their own: the face check sees an empty chair, the voice
+  // check hears one speaker. Only together do they mean anything.
+  //
+  // Judged on the frames captured while this clip was being recorded, and only
+  // on frames the detector could actually read, so a dark room never implies a
+  // hidden helper.
+  let warning = null
+  if (sample.reliable !== false && !interview.isPractice) {
+    const clipStart = Date.now() - (result.duration || 0) * 1000
+    const during = (interview.faceSamples || []).filter(
+      (s) => s.reliable !== false && new Date(s.at).getTime() >= clipStart
+    )
+    // Require a couple of readings before concluding anything: one frame that
+    // happened to catch them reaching for a glass of water proves nothing.
+    if (during.length >= 2 && during.every((s) => s.faceCount === 0)) {
+      const r = await recordViolation(interview, 'offscreen_voice', {
+        order: interview.currentIndex + 1,
+        extra: `speech recorded across ${during.length} frames with nobody in view`,
+      })
+      if (r.strike && !r.duplicate && !r.ignored) warning = r
+    }
+  }
+
   res.json({
     success: true,
     ok: true,
@@ -435,6 +463,7 @@ export const voice = asyncHandler(async (req, res) => {
     multiVoice: result.multiVoice,
     voiceCount: result.voiceCount,
     isReference: result.match == null,
+    ...(warning ? { warning } : {}),
   })
 })
 
@@ -811,6 +840,313 @@ export const screen = asyncHandler(async (req, res) => {
   res.json({ success: true })
 })
 
+// ── Proctoring: one warning, then the interview ends ────────────────────────
+//
+// What each rule means, in the words the candidate is warned with and the
+// employer reads in the report. Written once, here, so the two can never
+// disagree — a candidate told "someone else was in frame" and an employer told
+// "identity flag" would be reading about the same event and not know it.
+const VIOLATION_DETAIL = {
+  multiple_faces: 'Another person was visible on camera during the interview.',
+  no_face: 'The candidate was not visible on camera for a sustained period.',
+  face_mismatch: 'The person on camera did not match the candidate’s profile photo.',
+  multiple_voices: 'Another voice was heard speaking during an answer.',
+  voice_mismatch: 'The voice answering did not match the candidate’s enrolled voice.',
+  screen_share: 'The required screen share was stopped during the interview.',
+  tab_switch: 'The candidate left the interview page during the interview.',
+  // Phase 7 — what the camera and the shared screen actually showed.
+  phone_detected: 'A phone or tablet was visible on camera during the interview.',
+  notes_detected: 'Notes, printed sheets or an open book were visible on camera.',
+  screen_detected: 'A second screen or laptop was visible on camera.',
+  spoofed_camera: 'The camera appeared to show a photo, a screen or a synthetic face rather than a live person.',
+  gaze_away: 'The candidate spent a sustained period looking away from the screen, consistent with reading something off-camera.',
+  offscreen_voice: 'A voice was heard while the candidate was not visible on camera.',
+  screen_cheating: 'The shared screen showed an AI assistant, search results or prepared notes during the interview.',
+}
+
+// Detections are noisy, and the same problem persisting is not a new offence:
+// someone sitting in the background produces a hit every few seconds, and
+// counting each one would terminate an honest candidate in half a minute. One
+// strike per rule per this window, so a second strike means it happened, was
+// warned about, and then happened again.
+const VIOLATION_COOLDOWN_MS = 45 * 1000
+
+// Record a broken rule and decide what it costs.
+//
+// Shared by the client-reported route below and by the server-side vision
+// checks, which detect their own violations and must apply exactly the same
+// two-strike rule — a phone spotted by Gemini has to cost what a second face
+// spotted by the browser costs, or the policy the candidate agreed to isn't
+// the policy being enforced.
+//
+// `extra` carries the evidence behind a vision detection (what was seen, and
+// how sure the model was) so the report can show why, not just what.
+async function recordViolation(interview, type, { order, extra = '' } = {}) {
+  // Practice is for rehearsing. Ending someone's practice run for looking away
+  // teaches them nothing and costs them the session they came to get.
+  if (interview.isPractice) return { ignored: true, strike: 0, terminated: false }
+  if (interview.status === 'completed') return { ignored: true, strike: 0, terminated: false }
+
+  const now = Date.now()
+  const existing = interview.violations || []
+  const lastOfType = [...existing].reverse().find((v) => v.type === type)
+  if (lastOfType && now - new Date(lastOfType.at).getTime() < VIOLATION_COOLDOWN_MS) {
+    // Still the same incident — already warned for, not a fresh offence.
+    return { duplicate: true, strike: existing.length, terminated: false }
+  }
+
+  // Strikes are counted across every rule, not per rule. Someone who is warned
+  // for a second face and then stops sharing their screen has been warned once
+  // and done it again — the specific rule differing doesn't make it a first
+  // offence.
+  const strike = existing.length + 1
+  const terminated = strike >= 2
+  const base = VIOLATION_DETAIL[type]
+  // The evidence is appended to the same sentence rather than kept in a
+  // separate field, so anywhere the detail is shown it carries its own proof.
+  const detail = extra ? `${base} (${extra})` : base
+  const startedAt = interview.startedAt ? new Date(interview.startedAt).getTime() : now
+
+  const record = {
+    type,
+    strike,
+    detail,
+    atSeconds: Math.max(0, Math.round((now - startedAt) / 1000)),
+    order: order || interview.currentIndex + 1,
+    at: new Date(),
+  }
+
+  interview.violations = [...existing, record]
+  await Interview.updateOne(
+    { _id: interview._id },
+    { $push: { violations: record }, $set: { lastSeenAt: new Date() } }
+  )
+
+  if (terminated) {
+    interview.terminatedFor = detail
+    await closeInterview(interview, 'violation')
+    return {
+      strike,
+      terminated: true,
+      detail,
+      message:
+        'Your interview has been ended. ' +
+        detail +
+        ' You were warned once already, and the employer has been sent a report explaining this.',
+    }
+  }
+
+  return {
+    strike,
+    terminated: false,
+    detail,
+    message:
+      'Warning: ' + detail +
+      ' This is your only warning — if it happens again your interview will end automatically.',
+  }
+}
+
+// POST /api/interviews/:id/violation
+//
+// The candidate's page reports a rule it detected being broken. The server
+// decides what it costs — never the client, which is the thing being policed:
+// the strike count and the decision to end the interview are computed here from
+// what is already stored, so suppressing the call can only lose a candidate the
+// warning they would have been given, never earn them a pass.
+export const violation = asyncHandler(async (req, res) => {
+  const { type, order } = req.body
+  if (!mongoose.isValidObjectId(req.params.id)) throw new AppError(400, 'Invalid interview id')
+  if (!VIOLATION_DETAIL[type]) throw new AppError(400, 'Unknown violation type')
+
+  const interview = await Interview.findById(req.params.id).populate('job')
+  if (!interview) throw new AppError(404, 'Interview not found')
+  if (String(interview.candidate) !== String(req.user._id)) throw new AppError(403, 'Not your interview')
+  if (interview.status === 'completed') throw new AppError(400, 'Interview already completed')
+
+  const result = await recordViolation(interview, type, { order })
+  res.json({ success: true, ...result })
+})
+
+// Gaze is a coarse signal, so it is judged over a window rather than per
+// frame: a glance at the keyboard is normal, and only a sustained pattern of
+// looking away reads as reading something off-camera.
+const GAZE_MIN_SAMPLES = 12          // don't judge before there is enough to judge
+const GAZE_AWAY_RATIO = 0.55         // more than half the interview looking away
+
+// POST /api/interviews/:id/proctor — deeper checks on one webcam frame.
+//
+// Separate from /frame on purpose. /frame runs every few seconds on local ONNX
+// models and is essentially free; the vision checks here cost a Gemini call
+// each, so they run on a much slower cadence and the client says which it
+// wants. Both feed the same two-strike rule.
+export const proctorFrame = asyncHandler(async (req, res) => {
+  const { frame: frameB64, checks } = req.body
+  if (!mongoose.isValidObjectId(req.params.id)) throw new AppError(400, 'Invalid interview id')
+  if (!frameB64) throw new AppError(400, 'No frame provided')
+
+  const interview = await Interview.findById(req.params.id).populate('job')
+  if (!interview) throw new AppError(404, 'Interview not found')
+  if (String(interview.candidate) !== String(req.user._id)) throw new AppError(403, 'Not your interview')
+  if (interview.status === 'completed') throw new AppError(400, 'Interview already completed')
+
+  const wanted = Array.isArray(checks) && checks.length ? checks : ['gaze']
+  // The candidate's learned neutral head position, carried across calls
+  // because the AI service holds no state of its own.
+  const baseCount = interview.gazeBaselineCount || 0
+  const baseline = baseCount ? (interview.gazeBaselineSum || 0) / baseCount : null
+  const result = await aiService.proctorFrame(frameB64, wanted, baseline, baseCount)
+  if (!result) return res.json({ success: true, ok: false, reason: 'unavailable' })
+
+  const order = interview.currentIndex + 1
+  let warning = null
+  // At most one violation per call. Two rules breaking in the same frame is
+  // one moment, not two offences — raising both would take a candidate from
+  // clean to terminated without ever showing them a warning.
+  const raise = async (type, extra) => {
+    if (warning) return
+    const r = await recordViolation(interview, type, { order, extra })
+    if (r.strike && !r.duplicate && !r.ignored) warning = r
+  }
+
+  // ── Gaze (local, free) ──
+  const g = result.gaze
+  if (g?.ok) {
+    const away = g.lookingAway ? 1 : 0
+    // Only forward-facing frames feed the baseline (the service returns null
+    // otherwise), or a candidate who spent the first minute reading their notes
+    // would calibrate "looking down" as their own normal.
+    const sample = g.baselineSample
+    await Interview.updateOne(
+      { _id: interview._id },
+      {
+        $inc: {
+          gazeTotalFrames: 1,
+          gazeAwayFrames: away,
+          ...(sample != null ? { gazeBaselineSum: sample, gazeBaselineCount: 1 } : {}),
+        },
+        $set: { lastSeenAt: new Date() },
+      }
+    )
+    const total = (interview.gazeTotalFrames || 0) + 1
+    const awayTotal = (interview.gazeAwayFrames || 0) + away
+    // Nothing is judged until the baseline has settled — before that "down"
+    // is never reported, so the ratio would be measuring left/right alone.
+    if (g.baselineReady && total >= GAZE_MIN_SAMPLES && awayTotal / total >= GAZE_AWAY_RATIO) {
+      await raise(
+        'gaze_away',
+        `looking away in ${Math.round((awayTotal / total) * 100)}% of samples`
+      )
+    }
+  }
+
+  // ── Objects in shot (vision) ──
+  // One violation type per object kind, so the report names what was seen.
+  const objectType = {
+    phone: 'phone_detected',
+    notes: 'notes_detected',
+    screen: 'screen_detected',
+    person: 'multiple_faces',
+  }
+  for (const obj of result.objects?.actionable || []) {
+    await raise(objectType[obj.type], `${obj.note || obj.type}, ${obj.confidence}% confidence`)
+  }
+
+  // ── Liveness (vision) ──
+  if (result.liveness?.spoofed) {
+    await raise(
+      'spoofed_camera',
+      `${result.liveness.reason || 'spoof indicators'}, ${result.liveness.confidence}% confidence`
+    )
+  }
+
+  res.json({
+    success: true,
+    ok: true,
+    gaze: result.gaze || null,
+    objects: result.objects?.actionable || [],
+    liveness: result.liveness || null,
+    ...(warning ? { warning } : {}),
+  })
+})
+
+// POST /api/interviews/:id/screenshot — store one capture of the shared screen.
+//
+// The image goes to Cloudinary and only its URL is kept on the interview: a
+// base64 screenshot every half-minute would push a long interview past Mongo's
+// 16MB document limit. Analysis is opt-in per shot because each one is a
+// Gemini call — the client captures often and analyses rarely.
+export const screenshot = asyncHandler(async (req, res) => {
+  const { shot, analyze } = req.body
+  if (!mongoose.isValidObjectId(req.params.id)) throw new AppError(400, 'Invalid interview id')
+  if (!shot) throw new AppError(400, 'No screenshot provided')
+
+  const interview = await Interview.findById(req.params.id).populate('job')
+  if (!interview) throw new AppError(404, 'Interview not found')
+  if (String(interview.candidate) !== String(req.user._id)) throw new AppError(403, 'Not your interview')
+  if (interview.status === 'completed') throw new AppError(400, 'Interview already completed')
+  // Nothing to review and nobody to review it — a practice run has no employer.
+  if (interview.isPractice) return res.json({ success: true, skipped: true })
+
+  const now = Date.now()
+  const startedAt = interview.startedAt ? new Date(interview.startedAt).getTime() : now
+  const order = interview.currentIndex + 1
+  const atSeconds = Math.max(0, Math.round((now - startedAt) / 1000))
+
+  // Analyse before uploading: if the shot shows cheating, that matters even
+  // when storage is unavailable or the upload fails.
+  let findings = []
+  let analyzed = false
+  if (analyze) {
+    const vision = await aiService.proctorScreen(shot)
+    if (vision?.ok) {
+      analyzed = true
+      findings = vision.actionable || []
+    }
+  }
+
+  let url = ''
+  let publicId = ''
+  if (cloudinaryEnabled) {
+    try {
+      const base64 = String(shot).includes(',') ? String(shot).split(',')[1] : String(shot)
+      const uploaded = await uploadBuffer(Buffer.from(base64, 'base64'), {
+        folder: 'intivrabot/screenshots',
+        resource_type: 'image',
+        // Screens are wide and full of small text; this keeps the text legible
+        // for a reviewer while holding a long interview's storage in check.
+        transformation: [{ width: 1280, crop: 'limit', quality: 'auto:good' }],
+      })
+      url = uploaded.secure_url
+      publicId = uploaded.public_id
+    } catch {
+      // Storage failing must never end an interview — the finding above is
+      // still recorded, just without the picture behind it.
+    }
+  }
+
+  if (url) {
+    await Interview.updateOne(
+      { _id: interview._id },
+      {
+        $push: { screenshots: { url, publicId, order, atSeconds, analyzed, findings, at: new Date() } },
+        $set: { lastSeenAt: new Date() },
+      }
+    )
+  }
+
+  let warning = null
+  if (findings.length) {
+    const worst = findings.reduce((a, b) => (b.confidence > a.confidence ? b : a))
+    const r = await recordViolation(interview, 'screen_cheating', {
+      order,
+      extra: `${worst.note || worst.type}, ${worst.confidence}% confidence`,
+    })
+    if (r.strike && !r.duplicate && !r.ignored) warning = r
+  }
+
+  res.json({ success: true, stored: Boolean(url), findings, ...(warning ? { warning } : {}) })
+})
+
 // POST /api/interviews/:id/finish
 export const finish = asyncHandler(async (req, res) => {
   if (!mongoose.isValidObjectId(req.params.id)) throw new AppError(400, 'Invalid interview id')
@@ -911,6 +1247,12 @@ async function closeInterview(interview, reason = 'completed') {
 
   interview.status = 'completed'
   interview.endedReason = reason
+  // Set by the violation handler before it closes the interview; carried onto
+  // the saved document so the report can lead with the reason.
+  if (reason === 'violation' && !interview.terminatedFor) {
+    const last = (interview.violations || [])[interview.violations.length - 1]
+    interview.terminatedFor = last?.detail || 'A verification rule was broken during the interview.'
+  }
   interview.overallScore = overall
   interview.engagement = {
     questionsAsked: summary?.engagement?.questionsAsked ?? askedTurns.length,
@@ -949,10 +1291,20 @@ async function closeInterview(interview, reason = 'completed') {
     // An interview that was walked away from is itself worth an employer's
     // attention, however the remaining questions happened to score.
     const abandonFlag = reason === 'completed' ? 0 : 1
+    // Each warned rule-break is a flag in its own right. Without this an
+    // interview ended for cheating could still show a low flag count, because
+    // a candidate caught early never got far enough to accumulate face samples.
+    const violationFlags = (interview.violations || []).length
     totalFlags =
-      faceFlags + voiceFlags + textAnswers + screenFlags + hardshipAnswers + abandonFlag
+      faceFlags + voiceFlags + textAnswers + screenFlags + hardshipAnswers +
+      abandonFlag + violationFlags
     application.flags = totalFlags
-    application.status = overall >= job.passThreshold ? 'passed' : 'rejected'
+    // An interview ended for a rule-break is not a pass, whatever the answers
+    // given before it scored — the score is no longer evidence of anything.
+    application.status =
+      reason === 'violation' ? 'rejected'
+        : overall >= job.passThreshold ? 'passed'
+        : 'rejected'
     await application.save()
   }
 
@@ -960,6 +1312,7 @@ async function closeInterview(interview, reason = 'completed') {
   const ended =
     reason === 'abandoned' ? 'was ended after they left'
     : reason === 'timeout' ? 'ran out of time'
+    : reason === 'violation' ? 'was ended for a verification rule-break'
     : 'finished'
   const cand = await User.findById(interview.candidate).select('name')
   notify(interview.candidate, {
@@ -971,7 +1324,9 @@ async function closeInterview(interview, reason = 'completed') {
     body:
       reason === 'completed'
         ? `You scored ${overall}% on ${job.title}.`
-        : `Your ${job.title} interview ${ended}. You scored ${overall}% on what you answered.`,
+        : reason === 'violation'
+          ? `Your ${job.title} interview was ended. ${interview.terminatedFor} The report explains this to the employer.`
+          : `Your ${job.title} interview ${ended}. You scored ${overall}% on what you answered.`,
     link: `/candidate/results?id=${interview._id}`,
   })
   notify(job.hr, {

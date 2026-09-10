@@ -128,4 +128,16 @@ export const aiService = {
   // Analyse one answer's audio (Int16 PCM base64) vs an optional reference embedding.
   voiceAnalyze: (audio, sampleRate, reference) =>
     post('/api/voice/analyze', { audio, sampleRate, reference }),
+
+  // ── Visual proctoring (Phase 7) ──
+  // Which checks are actually available ({ gazeEnabled, visionEnabled, checks }).
+  proctorStatus: () => get('/api/proctor/status'),
+  // Run gaze / object / liveness checks over one webcam frame. `checks` picks
+  // which, because each vision check is a separate Gemini call.
+  // `gazeBaseline`/`gazeSamples` carry the candidate's learned resting head
+  // position across calls — the AI service is stateless.
+  proctorFrame: (frame, checks, gazeBaseline = null, gazeSamples = 0) =>
+    post('/api/proctor/frame', { frame, checks, gazeBaseline, gazeSamples }),
+  // Inspect a shared-screen screenshot for AI chats, search results or notes.
+  proctorScreen: (shot) => post('/api/proctor/screen', { shot }),
 }

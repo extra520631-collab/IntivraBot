@@ -43,13 +43,33 @@ def is_enabled() -> bool:
     return bool(settings.gemini_api_key)
 
 
-def generate(prompt: str, *, json_mode: bool = False, temperature: float = 0.7) -> str | None:
-    """Send a single prompt to Gemini; return the text response (or None)."""
+def generate(
+    prompt: str,
+    *,
+    json_mode: bool = False,
+    temperature: float = 0.7,
+    image_b64: str | None = None,
+    mime: str = "image/jpeg",
+) -> str | None:
+    """Send a single prompt to Gemini; return the text response (or None).
+
+    `image_b64` attaches one image to the prompt, which is what the visual
+    proctoring checks use. Bare base64 only — a `data:` URL prefix is stripped
+    here rather than at every call site, because sending one through unnoticed
+    fails as an opaque 400 from Google.
+    """
     if not is_enabled():
         return None
 
+    parts: list[dict] = [{"text": prompt}]
+    if image_b64:
+        clean = image_b64
+        if clean.startswith("data:"):
+            clean = clean.split(",", 1)[-1]
+        parts.append({"inline_data": {"mime_type": mime, "data": clean}})
+
     body = {
-        "contents": [{"parts": [{"text": prompt}]}],
+        "contents": [{"parts": parts}],
         "generationConfig": {"temperature": temperature},
     }
     if json_mode:
@@ -121,9 +141,17 @@ def _call(model: str, body: dict, deadline: float) -> str | None:
     return None
 
 
-def generate_json(prompt: str, *, temperature: float = 0.4) -> dict | None:
+def generate_json(
+    prompt: str,
+    *,
+    temperature: float = 0.4,
+    image_b64: str | None = None,
+    mime: str = "image/jpeg",
+) -> dict | None:
     """Ask Gemini for JSON and parse it robustly (handles ```json fences)."""
-    text = generate(prompt, json_mode=True, temperature=temperature)
+    text = generate(
+        prompt, json_mode=True, temperature=temperature, image_b64=image_b64, mime=mime
+    )
     if not text:
         return None
     cleaned = re.sub(r"^```(?:json)?|```$", "", text.strip(), flags=re.MULTILINE).strip()
